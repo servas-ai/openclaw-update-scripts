@@ -10,9 +10,12 @@ TARGET_SCRIPT="$ROOT/cron/check-updates-notify.sh"
 COMMON_LIB="$ROOT/lib/common.sh"
 
 # ─── Test Framework ──────────────────────────────────────────────────────────
-TESTS_PASSED=0
-TESTS_FAILED=0
-TESTS_TOTAL=0
+# Use temp files for counters so subshells can contribute to totals.
+_RESULTS_DIR="$(mktemp -d)"
+_PASS_FILE="$_RESULTS_DIR/passed"
+_FAIL_FILE="$_RESULTS_DIR/failed"
+echo 0 > "$_PASS_FILE"
+echo 0 > "$_FAIL_FILE"
 
 suite() {
   echo ""
@@ -23,14 +26,19 @@ suite() {
 }
 
 pass() {
-  TESTS_PASSED=$((TESTS_PASSED + 1))
-  TESTS_TOTAL=$((TESTS_TOTAL + 1))
+  # Atomic increment via flock
+  (
+    flock 9
+    local c; c=$(cat "$_PASS_FILE"); echo $((c+1)) > "$_PASS_FILE"
+  ) 9>"$_PASS_FILE.lock"
   echo "  [PASS] $*"
 }
 
 fail() {
-  TESTS_FAILED=$((TESTS_FAILED + 1))
-  TESTS_TOTAL=$((TESTS_TOTAL + 1))
+  (
+    flock 9
+    local c; c=$(cat "$_FAIL_FILE"); echo $((c+1)) > "$_FAIL_FILE"
+  ) 9>"$_FAIL_FILE.lock"
   echo "  [FAIL] $*" >&2
 }
 
@@ -60,7 +68,7 @@ assert_not_empty() {
 
 # ─── Mock Setup ──────────────────────────────────────────────────────────────
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf "$TMP_DIR" "$_RESULTS_DIR"' EXIT
 BIN_DIR="$TMP_DIR/bin"
 MOCK_DATA="$TMP_DIR/mock-data"
 mkdir -p "$BIN_DIR" "$MOCK_DATA"
@@ -680,8 +688,418 @@ assert_contains "$_AI_INT_OUT" "Authentifizierungssystem" "ai-int: AI summary po
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 23: Unit Tests — resolve_openclaw_bin
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: resolve_openclaw_bin"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # resolve_openclaw_bin should find our mock
+  result="$(resolve_openclaw_bin)"
+  assert_not_empty "$result" "resolve: finds binary"
+  [[ -x "$result" ]] && pass "resolve: binary is executable" || fail "resolve: not executable"
+
+  # With OPENCLAW_BIN set explicitly
+  OPENCLAW_BIN="$BIN_DIR/openclaw"
+  result2="$(resolve_openclaw_bin)"
+  assert_eq "$result2" "$BIN_DIR/openclaw" "resolve: uses OPENCLAW_BIN when set"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 24: Unit Tests — validate_openclaw_config
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: validate_openclaw_config"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+
+  # Config valid
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 1
+  source "$COMMON_LIB"
+  if validate_openclaw_config; then
+    pass "validate: returns 0 when valid"
+    assert_eq "$openclaw_config_valid" "1" "validate: sets flag to 1"
+  else
+    fail "validate: should return 0 when valid"
+  fi
+
+  # Config invalid
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  OPENCLAW_CLI_AVAILABLE=1
+  if validate_openclaw_config; then
+    fail "validate: should return 1 when invalid"
+  else
+    pass "validate: returns 1 when invalid"
+    assert_eq "$openclaw_config_valid" "0" "validate: sets flag to 0"
+  fi
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 25: Unit Tests — openclaw_latest_version with fallback
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: openclaw_latest_version fallback"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+
+  # With config valid → should use openclaw native
+  setup_mocks \
+    '{"dependencies":{"openclaw":{"version":"2026.3.2"}}}' \
+    '{"openclaw":"2026.3.99"}' \
+    '{}' 1 "2026.3.11"
+  source "$COMMON_LIB"
+  validate_openclaw_config
+  latest="$(openclaw_latest_version)"
+  assert_eq "$latest" "2026.3.11" "oc-latest: uses native when config valid"
+  # Note: openclaw_latest_source is set inside the function but
+  # runs in $() subshell, so we verify the value returned instead.
+  assert_not_empty "$latest" "oc-latest: returns version from native"
+
+  # With config invalid → should fallback to npm
+  openclaw_config_valid=0
+  OPENCLAW_CLI_AVAILABLE=0
+  latest2="$(openclaw_latest_version)"
+  assert_eq "$latest2" "2026.3.99" "oc-latest: falls back to npm"
+  assert_not_empty "$latest2" "oc-latest: npm fallback returns version"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 26: Unit Tests — Logging format
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: log_warn / log_info format"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  SCRIPT_NAME="test-runner"
+  source "$COMMON_LIB"
+
+  warn_out="$(log_warn "something broke" 2>&1)"
+  assert_contains "$warn_out" "WARN" "log_warn: has WARN prefix"
+  assert_contains "$warn_out" "test-runner" "log_warn: has SCRIPT_NAME"
+  assert_contains "$warn_out" "something broke" "log_warn: has message"
+  assert_matches "$warn_out" "[0-9]{4}-[0-9]{2}-[0-9]{2}" "log_warn: has timestamp"
+
+  info_out="$(log_info "all good" 2>&1)"
+  assert_contains "$info_out" "INFO" "log_info: has INFO prefix"
+  assert_contains "$info_out" "all good" "log_info: has message"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 27: Unit Tests — release_summary_line edge cases
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: release_summary_line"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # Strips markdown headers
+  assert_eq "$(release_summary_line $'# Title\nContent here')" "Content here" "summary: skips headers"
+
+  # Strips list markers
+  assert_eq "$(release_summary_line '- A bullet point')" "A bullet point" "summary: strips dash"
+  assert_eq "$(release_summary_line '* Asterisk point')" "Asterisk point" "summary: strips asterisk"
+  assert_eq "$(release_summary_line '1. Numbered item')" "Numbered item" "summary: strips number"
+
+  # Skips code block markers (``` lines filtered, content lines pass through)
+  result="$(release_summary_line $'```bash\nActual content')"
+  assert_eq "$result" "Actual content" "summary: skips code fence marker"
+
+  # Empty input
+  assert_empty "$(release_summary_line '')" "summary: empty input → empty"
+  assert_empty "$(release_summary_line $'   \n   \n  ')" "summary: whitespace only → empty"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 28: Unit Tests — github_repo_from_npm
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: github_repo_from_npm"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+
+  # Mock npm view to return a github URL
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  cat > "$BIN_DIR/npm" <<'MOCK_GH'
+#!/usr/bin/env bash
+if [[ "$*" == *"repository.url"* ]]; then
+  echo "git+https://github.com/owner/repo.git"
+  exit 0
+fi
+if [[ "$*" == *"repository"* ]]; then
+  echo "https://github.com/owner/repo"
+  exit 0
+fi
+exit 0
+MOCK_GH
+  chmod +x "$BIN_DIR/npm"
+  source "$COMMON_LIB"
+
+  result="$(github_repo_from_npm "test-pkg")"
+  assert_eq "$result" "owner/repo" "gh_repo: extracts owner/repo"
+
+  # SSH-style URL
+  cat > "$BIN_DIR/npm" <<'MOCK_GH2'
+#!/usr/bin/env bash
+if [[ "$*" == *"repository"* ]]; then
+  echo "git@github.com:org/project.git"
+  exit 0
+fi
+exit 0
+MOCK_GH2
+  chmod +x "$BIN_DIR/npm"
+
+  result2="$(github_repo_from_npm "test-pkg2")"
+  assert_eq "$result2" "org/project" "gh_repo: handles SSH URL"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 29: Unit Tests — gather_raw_changelog
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: gather_raw_changelog"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"cl-pkg":{"version":"1.0.0"}}}' \
+    '{"cl-pkg":"2.0.0"}' \
+    '{"cl-pkg":"A package with changelogs"}' 0 '' \
+    '[{"tag_name":"v2.0.0","body":"## Changes\n- Feature A\n- Feature B"},{"tag_name":"v1.5.0","body":"## Bugfixes\n- Fix C"}]'
+  source "$COMMON_LIB"
+
+  ctx="$(gather_raw_changelog "cl-pkg" "1.0.0" "2.0.0")"
+  assert_not_empty "$ctx" "changelog: returns content"
+  # The npm description section should be present even without GitHub releases
+  assert_contains "$ctx" "npm description" "changelog: has npm desc"
+  assert_contains "$ctx" "A package with changelogs" "changelog: includes desc text"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 30: Unit Tests — package_whats_new_points (full pipeline)
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: package_whats_new_points"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"pwnp":{"version":"1.0.0"}}}' \
+    '{"pwnp":"2.0.0"}' \
+    '{"pwnp":"Test description for pwnp"}' 0 '' '[]'
+  source "$COMMON_LIB"
+
+  AI_SUMMARIZE=0
+  _pts=()
+  package_whats_new_points "pwnp" "1.0.0" "2.0.0" _pts
+  assert_eq "${#_pts[@]}" "3" "whats_new: always 3 points"
+  assert_not_empty "${_pts[0]}" "whats_new: point 1 not empty"
+  assert_not_empty "${_pts[1]}" "whats_new: point 2 not empty"
+  assert_not_empty "${_pts[2]}" "whats_new: point 3 not empty"
+
+  # Unknown package should still return 3 points
+  _pts2=()
+  package_whats_new_points "unknown-xyz" "0.0.1" "0.0.2" _pts2
+  assert_eq "${#_pts2[@]}" "3" "whats_new: unknown pkg → 3 points"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 31: Unit Tests — build_buttons_json
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: build_buttons_json"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+  source "$TARGET_SCRIPT" --source-only 2>/dev/null || true
+
+  # We need to test build_buttons_json which is in check-updates-notify.sh
+  # Source it by extracting just the function
+  eval "$(sed -n '/^build_buttons_json/,/^}/p' "$TARGET_SCRIPT")"
+
+  # Single update
+  updates=("single-pkg")
+  btn1="$(build_buttons_json 1)"
+  assert_contains "$btn1" "update_all_yes" "btn1: has yes"
+  assert_contains "$btn1" "update_all_no" "btn1: has no"
+  assert_not_contains "$btn1" "Alle updaten" "btn1: no 'alle' for single"
+  echo "$btn1" | jq . >/dev/null 2>&1 && pass "btn1: valid JSON" || fail "btn1: invalid JSON"
+
+  # Multiple updates
+  updates=("pkg-a" "pkg-b" "pkg-c")
+  btn3="$(build_buttons_json 3)"
+  assert_contains "$btn3" "Alle updaten" "btn3: has 'alle' for multi"
+  assert_contains "$btn3" "update_single_pkg-a" "btn3: callback for pkg-a"
+  echo "$btn3" | jq . >/dev/null 2>&1 && pass "btn3: valid JSON" || fail "btn3: invalid JSON"
+
+  # Max 4 per-package buttons
+  updates=("p1" "p2" "p3" "p4" "p5" "p6")
+  btn6="$(build_buttons_json 6)"
+  assert_not_contains "$btn6" "update_single_p5" "btn6: max 4 per-pkg buttons (p5 excluded)"
+  assert_not_contains "$btn6" "update_single_p6" "btn6: max 4 per-pkg buttons (p6 excluded)"
+  echo "$btn6" | jq . >/dev/null 2>&1 && pass "btn6: valid JSON" || fail "btn6: invalid JSON"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 32: Unit Tests — npm cache invalidation
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: npm cache invalidation"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"cached":{"version":"1.0.0"}}}' \
+    '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # Trigger cache population via internal function
+  _npm_global_cache_refresh
+  assert_not_empty "$_NPM_GLOBAL_CACHE" "cache: populated after refresh"
+
+  # Verify version lookup works from cache
+  v1="$(npm_global_current_version "cached")"
+  assert_eq "$v1" "1.0.0" "cache: correct version from cache"
+
+  # Invalidate
+  invalidate_npm_cache
+  assert_empty "$_NPM_GLOBAL_CACHE" "cache: empty after invalidate"
+  assert_eq "$_NPM_GLOBAL_CACHE_TS" "0" "cache: timestamp reset"
+
+  # Re-populate and verify
+  _npm_global_cache_refresh
+  assert_not_empty "$_NPM_GLOBAL_CACHE" "cache: re-populated correctly"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 33: Unit Tests — Version edge cases (pre-release, empty, 4-segment)
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: Version edge cases"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # Pre-release
+  version_gt "1.0.1-beta" "1.0.0" && pass "version: 1.0.1-beta > 1.0.0" || fail "version: prerelease"
+  # Note: sort -V behavior with pre-release suffixes is platform-dependent.
+  # On most Linux systems, 1.0.0 > 1.0.0-alpha, but we don't rely on this.
+  # Instead test clearly different versions:
+  version_gt "1.0.1" "1.0.0-alpha" && pass "version: 1.0.1 > 1.0.0-alpha" || fail "version: stable vs prerelease"
+
+  # Empty strings (should not crash)
+  ! version_gt "" "1.0.0" 2>/dev/null && pass "version: empty left → false" || fail "version: empty left"
+  ! version_gt "" "" 2>/dev/null && pass "version: both empty → false" || fail "version: both empty"
+
+  # Very large versions
+  version_gt "999.999.999" "999.999.998" && pass "version: large numbers" || fail "version: large"
+
+  # 4-segment versions
+  version_gt "1.2.3.4" "1.2.3.3" && pass "version: 4-segment" || fail "version: 4-segment"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 34: Unit Tests — get_update_key sanitization
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: get_update_key sanitization"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  k1="$(get_update_key '@scope/deep-pkg')"
+  assert_not_contains "$k1" "/" "key @scope: no slash"
+  assert_not_contains "$k1" "@" "key @scope: no @"
+  assert_not_contains "$k1" " " "key @scope: no space"
+  assert_not_empty "$k1" "key @scope: not empty"
+
+  k2="$(get_update_key 'simple')"
+  assert_eq "$k2" "simple" "key simple: unchanged"
+
+  k3="$(get_update_key '@a/b c')"
+  assert_not_contains "$k3" " " "key space: sanitized"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 35: Unit Tests — json_escape advanced
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: json_escape advanced"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # Tab characters
+  assert_eq "$(json_escape $'has\ttab')" $'has\ttab' "json_escape: tabs preserved"
+
+  # Multiple quotes
+  assert_eq "$(json_escape '"a" and "b"')" '\"a\" and \"b\"' "json_escape: multiple quotes"
+
+  # Mixed special chars: literal newlines → escaped \n
+  result="$(json_escape $'"line1"\n"line2"')"
+  assert_contains "$result" '\n' "json_escape: newlines escaped to backslash-n"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 36: Unit Tests — normalize_version advanced
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: normalize_version advanced"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  assert_eq "$(normalize_version 'refs/tags/v3.2.1')" "3.2.1" "normalize: refs/tags/v prefix"
+  assert_eq "$(normalize_version 'pkg@1.0.0-beta.1')" "1.0.0-beta.1" "normalize: scoped with prerelease"
+  assert_eq "$(normalize_version '')" "" "normalize: empty → empty"
+  assert_eq "$(normalize_version 'v')" "" "normalize: just v → empty"
+  assert_eq "$(normalize_version '0.0.0')" "0.0.0" "normalize: zero version"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 37: Unit Tests — shorten_line edge cases
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: shorten_line edge cases"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # Carriage returns removed
+  assert_eq "$(shorten_line $'hello\r\nworld')" "hello world" "shorten: removes CR+LF"
+
+  # Multiple whitespace collapsed
+  assert_eq "$(shorten_line 'a   b   c')" "a b c" "shorten: collapses spaces"
+
+  # Empty string
+  assert_eq "$(shorten_line '')" "" "shorten: empty → empty"
+
+  # Exactly 240 chars (should not truncate)
+  str_240="$(printf '%0.sA' {1..240})"
+  result="$(shorten_line "$str_240")"
+  assert_eq "${#result}" "240" "shorten: 240 chars untouched"
+
+  # 241 chars (should truncate to 240)
+  str_241="$(printf '%0.sB' {1..241})"
+  result2="$(shorten_line "$str_241")"
+  assert_eq "${#result2}" "240" "shorten: 241 → 240"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # RESULTS
 # ═══════════════════════════════════════════════════════════════════════════════
+TESTS_PASSED=$(cat "$_PASS_FILE")
+TESTS_FAILED=$(cat "$_FAIL_FILE")
+TESTS_TOTAL=$((TESTS_PASSED + TESTS_FAILED))
+
 echo ""
 echo "═══════════════════════════════════════════════════"
 if [[ "$TESTS_FAILED" -eq 0 ]]; then
@@ -692,3 +1110,4 @@ fi
 echo "═══════════════════════════════════════════════════"
 echo ""
 exit "$TESTS_FAILED"
+
