@@ -77,12 +77,19 @@ version_lte() {
 # Set SAFE_RUN_LOGIN=0 to use bash -c instead of bash -lc (for tests with mock PATHs)
 SAFE_RUN_LOGIN="${SAFE_RUN_LOGIN:-1}"
 
+# Cache timeout availability once at init (avoid 'command -v' on every call)
+if command -v timeout >/dev/null 2>&1; then
+  _HAS_TIMEOUT=1
+else
+  _HAS_TIMEOUT=0
+fi
+
 safe_run() {
   local cmd="$1"
   local shell_flag="-lc"
   [[ "$SAFE_RUN_LOGIN" == "0" ]] && shell_flag="-c"
 
-  if command -v timeout >/dev/null 2>&1; then
+  if [[ "$_HAS_TIMEOUT" -eq 1 ]]; then
     timeout "$SAFE_TIMEOUT_SEC" bash $shell_flag "$cmd" 2>/dev/null | head -n1 | tr -d '\r' || true
   else
     bash $shell_flag "$cmd" 2>/dev/null | head -n1 | tr -d '\r' || true
@@ -94,7 +101,7 @@ safe_run_all() {
   local shell_flag="-lc"
   [[ "$SAFE_RUN_LOGIN" == "0" ]] && shell_flag="-c"
 
-  if command -v timeout >/dev/null 2>&1; then
+  if [[ "$_HAS_TIMEOUT" -eq 1 ]]; then
     timeout "$SAFE_TIMEOUT_SEC" bash $shell_flag "$cmd" 2>/dev/null || true
   else
     bash $shell_flag "$cmd" 2>/dev/null || true
@@ -119,8 +126,13 @@ run_with_retry() {
 # ─── String helpers ────────────────────────────────────────────────────────────
 shorten_line() {
   local input="$1"
-  input="$(printf '%s' "$input" | tr '\n\r' ' ' | sed 's/[[:space:]]\+/ /g')"
-  printf '%s' "$input" | cut -c1-240
+  # Replace newlines/CRs with spaces using bash builtins
+  input="${input//$'\n'/ }"
+  input="${input//$'\r'/}"
+  # Collapse whitespace via single sed
+  input="$(printf '%s' "$input" | sed 's/[[:space:]]\+/ /g')"
+  # Truncate with bash substring (avoids spawning cut)
+  printf '%s' "${input:0:240}"
 }
 
 normalize_version() {
@@ -142,12 +154,27 @@ json_escape() {
 }
 
 # ─── npm version lookup (handles scoped packages correctly) ────────────────────
+# Cache for npm ls -g output — avoids spawning npm+jq per package.
+_NPM_GLOBAL_CACHE=""
+_NPM_GLOBAL_CACHE_TS=0
+
+_npm_global_cache_refresh() {
+  local now
+  now="$(date +%s)"
+  # Refresh at most once per 30 seconds
+  if [[ -z "$_NPM_GLOBAL_CACHE" || $((now - _NPM_GLOBAL_CACHE_TS)) -gt 30 ]]; then
+    _NPM_GLOBAL_CACHE="$(safe_run_all 'npm ls -g --depth=0 --json')"
+    _NPM_GLOBAL_CACHE_TS="$now"
+  fi
+}
+
 npm_global_current_version() {
   local pkg="$1"
+  _npm_global_cache_refresh
+  [[ -z "$_NPM_GLOBAL_CACHE" ]] && return 0
   local esc_pkg
   esc_pkg="$(json_escape "$pkg")"
-  # Use npm's JSON output with the escaped package name directly in jq filter
-  safe_run "npm ls -g --depth=0 --json | jq -r '.dependencies[\"${esc_pkg}\"].version // empty'"
+  printf '%s' "$_NPM_GLOBAL_CACHE" | jq -r ".dependencies[\"${esc_pkg}\"].version // empty" 2>/dev/null
 }
 
 npm_latest_version() {
@@ -267,8 +294,10 @@ github_repo_from_npm() {
 release_summary_line() {
   local input="$1"
   local line
-  line="$(printf '%s\n' "$input" | sed -E 's/\r//g' | sed '/^\s*$/d' | sed -E '/^\s*#/d' | sed -E '/^\s*```/d' | head -n1)"
-  line="$(printf '%s' "$line" | sed -E 's/^\s*[-*+]\s+//' | sed -E 's/^\s*[0-9]+[.)]\s+//' | sed 's/[[:space:]]\+/ /g' | sed 's/^ //; s/ $//')"
+  # Combined sed: remove CRs, skip blank/heading/code lines, take first meaningful line
+  line="$(printf '%s\n' "$input" | sed -E '/^\s*$/d; /^\s*#/d; /^\s*```/d; s/\r//g' | head -n1)"
+  # Strip list markers, collapse whitespace — single sed pipeline
+  line="$(printf '%s' "$line" | sed -E 's/^\s*[-*+]\s+//; s/^\s*[0-9]+[.)]\s+//; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
   printf '%s' "$(shorten_line "$line")"
 }
 
@@ -480,8 +509,13 @@ discover_new_global_npm_packages() {
   local wl_file="${1:-$WATCHLIST_FILE}"
   [[ -f "$wl_file" ]] || return 0
 
+  # Reuse cached npm ls if available (already fetched for version lookups)
   local installed_json
-  installed_json="$(safe_run_all 'npm ls -g --depth=0 --json')"
+  if [[ -n "$_NPM_GLOBAL_CACHE" ]]; then
+    installed_json="$_NPM_GLOBAL_CACHE"
+  else
+    installed_json="$(safe_run_all 'npm ls -g --depth=0 --json')"
+  fi
   [[ -z "$installed_json" ]] && return 0
 
   local installed_pkgs wl_pkgs exclude_pkgs
@@ -501,26 +535,34 @@ discover_new_global_npm_packages() {
 }
 
 # Adds newly discovered npm packages to the watchlist JSON.
-# Returns the count of packages added.
+# Returns the count of packages added. Uses a single jq call to batch all additions.
 sync_watchlist_npm() {
   local wl_file="${1:-$WATCHLIST_FILE}"
   [[ -f "$wl_file" ]] || return 0
 
-  local new_pkgs added=0
+  local new_pkgs
   new_pkgs="$(discover_new_global_npm_packages "$wl_file")"
   [[ -z "$new_pkgs" ]] && { echo 0; return 0; }
 
+  # Build a JSON array of new packages for a single batched jq call
+  local jq_arr="[" first=1 added=0
   while IFS= read -r pkg; do
     [[ -z "$pkg" ]] && continue
-    # Add to the npm array in the watchlist (idempotent, sorted)
+    [[ "$first" -eq 1 ]] && first=0 || jq_arr+=","
+    jq_arr+="\"$(json_escape "$pkg")\""
+    log_info "Watchlist: added new global package '$pkg'"
+    added=$((added + 1))
+  done <<< "$new_pkgs"
+  jq_arr+="]"
+
+  if [[ "$added" -gt 0 ]]; then
+    # Single jq call: merge all new packages at once
     local tmp_wl
-    tmp_wl="$(jq --arg p "$pkg" '.npm = (.npm + [$p] | unique | sort)' "$wl_file")"
+    tmp_wl="$(jq --argjson new "$jq_arr" '.npm = (.npm + $new | unique | sort)' "$wl_file")"
     if [[ -n "$tmp_wl" ]]; then
       printf '%s\n' "$tmp_wl" > "$wl_file"
-      log_info "Watchlist: added new global package '$pkg'"
-      added=$((added + 1))
     fi
-  done <<< "$new_pkgs"
+  fi
 
   echo "$added"
 }
