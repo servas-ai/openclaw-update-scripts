@@ -8,7 +8,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/bash-5.0+-4EAA25?logo=gnubash&logoColor=white" alt="Bash 5.0+">
   <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=nodedotjs&logoColor=white" alt="Node.js">
-  <img src="https://img.shields.io/badge/tests-167%2F167-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-234%2F234-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
 </p>
 
