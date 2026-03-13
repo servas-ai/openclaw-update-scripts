@@ -1,0 +1,41 @@
+{
+  "npm": [
+    "agent-browser",
+    "@anthropic-ai/claude-code",
+    "bash-language-server",
+    "@biomejs/biome",
+    "claude-flow",
+    "@factory/cli",
+    "gastown-gui",
+    "gitnexus",
+    "@google/gemini-cli",
+    "@kaitranntt/ccs",
+    "npm",
+    "oh-my-opencode",
+    "oh-my-opencode-linux-x64",
+    "@openai/codex",
+    "openclaw",
+    "opencode-ai",
+    "opencode-orchestrator",
+    "pg",
+    "pnpm",
+    "ruflo",
+    "@steipete/oracle",
+    "vibe-kanban",
+    "yaml-language-server"
+  ],
+  "snap": [
+    "bare",
+    "chromium",
+    "core22",
+    "core24",
+    "cups",
+    "gnome-46-2404",
+    "gtk-common-themes",
+    "mesa-2404",
+    "snapd"
+  ],
+  "go": [
+    "gt"
+  ]
+}
