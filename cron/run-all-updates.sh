@@ -1,118 +1,92 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WATCHLIST_FILE="/home/coder/.openclaw/workspace/cron/update-watchlist.json"
-CHAT_ID="-1003766760589"
-THREAD_ID="16"
+# ─── Source shared library ─────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="run-all-updates"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+# ─── Script-specific config ───────────────────────────────────────────────────
 TELEGRAM_NOTIFY="${TELEGRAM_NOTIFY:-1}"
 
-version_gt() {
-  [ "$(printf '%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ] && [ "$1" != "$2" ]
-}
-
-safe_run() {
-  bash -lc "$1" 2>/dev/null | head -n1 | tr -d '\r' || true
-}
-
-run_with_retry() {
-  local cmd="$1"
-  local log="$2"
-  if timeout 900 bash -lc "$cmd" >"$log" 2>&1; then
-    return 0
-  fi
-  timeout 900 bash -lc "$cmd" >>"$log" 2>&1
-}
-
+# ─── State ─────────────────────────────────────────────────────────────────────
 report=()
 updated_count=0
 failed_count=0
-openclaw_config_valid=1
+skipped_count=0
 
-if command -v openclaw >/dev/null 2>&1; then
-  if ! openclaw_validate_out="$(openclaw config validate 2>&1)"; then
-    openclaw_config_valid=0
-    openclaw_validate_out="$(printf '%s' "$openclaw_validate_out" | tr '\n\r' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-220)"
-    report+=("• openclaw: Hinweis: config invalid, fallback auf npm registry (${openclaw_validate_out})")
-  fi
+# ─── Validate OpenClaw config ─────────────────────────────────────────────────
+if ! validate_openclaw_config; then
+  openclaw_validate_out="$($OPENCLAW_BIN config validate 2>&1 || true)"
+  openclaw_validate_out="$(printf '%s' "$openclaw_validate_out" | tr '\n\r' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-220)"
+  report+=("⚙️ openclaw config: fallback auf npm registry (${openclaw_validate_out})")
 fi
 
+# ─── Update a single npm package ──────────────────────────────────────────────
 update_npm_if_needed() {
   local pkg="$1"
-  local before latest after cmd key
+  local before latest after cmd key log
 
+  # Get current version using the fixed scoped-package-safe function
+  before="$(npm_global_current_version "$pkg")"
+
+  # Get latest version
   if [[ "$pkg" == "openclaw" ]]; then
-    before="$(safe_run "npm ls -g openclaw --depth=0 --json | jq -r '.dependencies[\"openclaw\"].version // empty'")"
-    latest=""
-    if [[ "$openclaw_config_valid" == "1" ]]; then
-      latest="$(safe_run "openclaw update status --json | jq -r '.update.registry.latestVersion // empty'")"
+    latest="$(openclaw_latest_version)"
+    if [[ "$openclaw_latest_source" == "npm" ]]; then
+      report+=("  ℹ️ openclaw: latest via npm fallback ermittelt")
     fi
-    if [[ -z "$latest" ]]; then
-      latest="$(safe_run "npm view openclaw version")"
-      report+=("• openclaw: Hinweis: latest via npm fallback ermittelt")
-    fi
-    cmd="openclaw update --channel stable --yes"
-    key="openclaw"
-  elif [[ "$pkg" == "@kaitranntt/ccs" ]]; then
-    before="$(safe_run "npm ls -g @kaitranntt/ccs --depth=0 --json | jq -r '.dependencies[\"@kaitranntt/ccs\"].version // empty'")"
-    latest="$(safe_run "npm view @kaitranntt/ccs version")"
-    cmd="ccs update"
-    key="kaitranntt-ccs"
-  elif [[ "$pkg" == "opencode-ai" ]]; then
-    before="$(safe_run "npm ls -g opencode-ai --depth=0 --json | jq -r '.dependencies[\"opencode-ai\"].version // empty'")"
-    latest="$(safe_run "npm view opencode-ai version")"
-    cmd="opencode upgrade"
-    key="opencode-ai"
-  elif [[ "$pkg" == "vibe-kanban" ]]; then
-    before="$(safe_run "npm ls -g vibe-kanban --depth=0 --json | jq -r '.dependencies[\"vibe-kanban\"].version // empty'")"
-    latest="$(safe_run "npm view vibe-kanban version")"
-    cmd="npx -y vibe-kanban@latest --help >/dev/null 2>&1 || true"
-    key="vibe-kanban"
   else
-    before="$(safe_run "npm ls -g '$pkg' --depth=0 --json | jq -r --arg p '$pkg' '.dependencies[\$p].version // empty'")"
-    latest="$(safe_run "npm view '$pkg' version")"
-    cmd="npm install -g '$pkg'@latest"
-    key="$(echo "$pkg" | tr '@/ ' '---')"
+    latest="$(npm_latest_version "$pkg")"
   fi
 
+  # Get the update command from shared lib
+  cmd="$(get_update_command "$pkg")"
+  key="$(get_update_key "$pkg")"
+
   if [[ -z "$before" || -z "$latest" ]]; then
-    report+=("• ${pkg}: übersprungen (Version nicht lesbar)")
+    report+=("⏭️ ${pkg}: übersprungen (Version nicht lesbar, before='${before:-?}', latest='${latest:-?}')")
+    skipped_count=$((skipped_count + 1))
     return
   fi
 
   if ! version_gt "$latest" "$before"; then
-    report+=("• ${pkg}: ${before} (aktuell)")
+    report+=("✅ ${pkg}: ${before} (aktuell)")
     return
   fi
 
-  local log="/tmp/openclaw-update-${key}.log"
+  log="/tmp/openclaw-update-${key}.log"
+  log_info "Updating ${pkg}: ${before} → ${latest} via: ${cmd}"
+
   if run_with_retry "$cmd" "$log"; then
-    if [[ "$pkg" == "openclaw" ]]; then
-      after="$(safe_run "npm ls -g openclaw --depth=0 --json | jq -r '.dependencies[\"openclaw\"].version // empty'")"
+    after="$(npm_global_current_version "$pkg")"
+    if [[ -n "$after" ]] && version_gt "$after" "$before"; then
+      report+=("✅ ${pkg}: ${before} → ${after}")
+      updated_count=$((updated_count + 1))
+    elif [[ "$after" == "$before" ]]; then
+      # Command succeeded but version didn't change
+      report+=("⚠️ ${pkg}: ${before} → ${after} (Befehl OK, Version unverändert)")
     else
-      after="$(safe_run "npm ls -g '$pkg' --depth=0 --json | jq -r --arg p '$pkg' '.dependencies[\$p].version // empty'")"
+      report+=("✅ ${pkg}: ${before} → ${after:-?}")
+      updated_count=$((updated_count + 1))
     fi
-    report+=("• ${pkg}: ${before} → ${after} ✅")
-    updated_count=$((updated_count + 1))
   else
-    if [[ "$pkg" == "openclaw" ]]; then
-      after="$(safe_run "npm ls -g openclaw --depth=0 --json | jq -r '.dependencies[\"openclaw\"].version // empty'")"
-    else
-      after="$(safe_run "npm ls -g '$pkg' --depth=0 --json | jq -r --arg p '$pkg' '.dependencies[\$p].version // empty'")"
-    fi
+    after="$(npm_global_current_version "$pkg")"
     local err
-    err="$(tail -n 1 "$log" 2>/dev/null || echo 'unbekannter Fehler')"
-    report+=("• ${pkg}: ${before} → ${after} ❌ (${err})")
+    err="$(tail -n 3 "$log" 2>/dev/null | tr '\n' ' ' | cut -c1-200 || echo 'unbekannter Fehler')"
+    report+=("❌ ${pkg}: ${before} → ${after:-?} (${err})")
+    report+=("  📄 Log: ${log}")
     failed_count=$((failed_count + 1))
   fi
 }
 
-# npm watchlist
+# ─── npm watchlist ─────────────────────────────────────────────────────────────
 while IFS= read -r pkg; do
   [[ -z "$pkg" ]] && continue
   update_npm_if_needed "$pkg"
 done < <(jq -r '.npm[]? // empty' "$WATCHLIST_FILE")
 
-# snap watchlist (optional)
+# ─── snap watchlist ────────────────────────────────────────────────────────────
 if command -v snap >/dev/null 2>&1; then
   snap_updates_raw="$(timeout 60 snap refresh --list 2>/dev/null || true)"
   if [[ -n "$snap_updates_raw" ]]; then
@@ -123,38 +97,49 @@ if command -v snap >/dev/null 2>&1; then
         log="/tmp/openclaw-update-snap-${snap_name}.log"
         if run_with_retry "snap refresh '$snap_name'" "$log"; then
           after="$(snap list "$snap_name" 2>/dev/null | awk 'NR==2{print $2}')"
-          report+=("• snap:${snap_name}: ${before} → ${after} ✅")
+          report+=("✅ snap:${snap_name}: ${before} → ${after}")
           updated_count=$((updated_count + 1))
         else
           after="$(snap list "$snap_name" 2>/dev/null | awk 'NR==2{print $2}')"
           err="$(tail -n 1 "$log" 2>/dev/null || echo 'unbekannter Fehler')"
-          report+=("• snap:${snap_name}: ${before} → ${after} ❌ (${err})")
+          report+=("❌ snap:${snap_name}: ${before} → ${after} (${err})")
           failed_count=$((failed_count + 1))
         fi
       else
         current="$(snap list "$snap_name" 2>/dev/null | awk 'NR==2{print $2}')"
-        [[ -n "$current" ]] && report+=("• snap:${snap_name}: ${current} (aktuell)")
+        [[ -n "$current" ]] && report+=("✅ snap:${snap_name}: ${current} (aktuell)")
       fi
     done < <(jq -r '.snap[]? // empty' "$WATCHLIST_FILE")
   fi
 fi
 
+# ─── Console output ───────────────────────────────────────────────────────────
+echo ""
+echo "═══════════════════════════════════════"
+echo "  Update-Lauf Ergebnis"
+echo "═══════════════════════════════════════"
+echo ""
 for line in "${report[@]}"; do
-  echo "$line"
+  echo "  $line"
 done
+echo ""
+echo "  Updated: ${updated_count} | Fehler: ${failed_count} | Übersprungen: ${skipped_count}"
+echo "═══════════════════════════════════════"
 
-if [[ "$TELEGRAM_NOTIFY" == "1" ]] && command -v openclaw >/dev/null 2>&1; then
+# ─── Telegram/Matrix notification ─────────────────────────────────────────────
+if [[ "$TELEGRAM_NOTIFY" == "1" && "$OPENCLAW_CLI_AVAILABLE" == "1" ]]; then
   ts="$(date '+%d.%m.%Y %H:%M')"
-  msg=$'✅ Update-Lauf abgeschlossen ('"$ts"$')\n\n'
-  msg+="• Updated: ${updated_count}"$'\n'
-  msg+="• Fehler: ${failed_count}"$'\n\n'
+
+  local_status="✅"
+  [[ "$failed_count" -gt 0 ]] && local_status="⚠️"
+
+  msg="${local_status} Update-Lauf abgeschlossen (${ts})"$'\n'
+  msg+=$'━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
+  msg+="📊 Updated: ${updated_count} | Fehler: ${failed_count} | Übersprungen: ${skipped_count}"$'\n\n'
+
   for line in "${report[@]}"; do
     msg+="$line"$'\n'
   done
 
-  openclaw message send \
-    --channel telegram \
-    --target "$CHAT_ID" \
-    --thread-id "$THREAD_ID" \
-    --message "$msg" >/dev/null || true
+  send_to_all_channels "$msg" || log_warn "Abschluss-Nachricht konnte nicht gesendet werden."
 fi
