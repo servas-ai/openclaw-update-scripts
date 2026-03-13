@@ -566,3 +566,166 @@ sync_watchlist_npm() {
 
   echo "$added"
 }
+
+# ─── Shared update runner logic ────────────────────────────────────────────────
+# Used by run-all-updates.sh and run-all-updates-direct.sh to avoid duplication.
+# Callers must declare these arrays/counters before calling:
+#   report=() updated_count=0 failed_count=0 skipped_count=0
+
+# Invalidate the npm global cache (call after installing/updating a package)
+invalidate_npm_cache() {
+  _NPM_GLOBAL_CACHE=""
+  _NPM_GLOBAL_CACHE_TS=0
+}
+
+# Update a single npm package if a newer version is available.
+# Appends results to the caller's report[] array and increments counters.
+update_npm_if_needed() {
+  local pkg="$1"
+  local before latest after cmd key log
+
+  before="$(npm_global_current_version "$pkg")"
+
+  if [[ "$pkg" == "openclaw" ]]; then
+    latest="$(openclaw_latest_version)"
+    [[ "$openclaw_latest_source" == "npm" ]] && \
+      report+=("  ℹ️ openclaw: latest via npm fallback ermittelt")
+  else
+    latest="$(npm_latest_version "$pkg")"
+  fi
+
+  cmd="$(get_update_command "$pkg")"
+  key="$(get_update_key "$pkg")"
+
+  if [[ -z "$before" || -z "$latest" ]]; then
+    report+=("⏭️ ${pkg}: übersprungen (Version nicht lesbar, before='${before:-?}', latest='${latest:-?}')")
+    skipped_count=$((skipped_count + 1))
+    return
+  fi
+
+  if ! version_gt "$latest" "$before"; then
+    report+=("✅ ${pkg}: ${before} (aktuell)")
+    return
+  fi
+
+  log="/tmp/openclaw-update-${key}.log"
+  log_info "Updating ${pkg}: ${before} → ${latest} via: ${cmd}"
+
+  if run_with_retry "$cmd" "$log"; then
+    invalidate_npm_cache
+    after="$(npm_global_current_version "$pkg")"
+    if [[ -n "$after" ]] && version_gt "$after" "$before"; then
+      report+=("✅ ${pkg}: ${before} → ${after}")
+      updated_count=$((updated_count + 1))
+    elif [[ "$after" == "$before" ]]; then
+      report+=("⚠️ ${pkg}: ${before} → ${after} (Befehl OK, Version unverändert)")
+    else
+      report+=("✅ ${pkg}: ${before} → ${after:-?}")
+      updated_count=$((updated_count + 1))
+    fi
+  else
+    invalidate_npm_cache
+    after="$(npm_global_current_version "$pkg")"
+    local err
+    err="$(tail -n 3 "$log" 2>/dev/null | tr '\n' ' ' | cut -c1-200 || echo 'unbekannter Fehler')"
+    report+=("❌ ${pkg}: ${before} → ${after:-?} (${err})")
+    report+=("  📄 Log: ${log}")
+    failed_count=$((failed_count + 1))
+  fi
+}
+
+# Process all snap packages from the watchlist.
+update_snap_packages() {
+  command -v snap >/dev/null 2>&1 || return 0
+
+  local snap_updates_raw
+  snap_updates_raw="$(timeout 60 snap refresh --list 2>/dev/null || true)"
+  [[ -z "$snap_updates_raw" ]] && return 0
+
+  while IFS= read -r snap_name; do
+    [[ -z "$snap_name" ]] && continue
+    local row
+    row="$(printf '%s\n' "$snap_updates_raw" | awk -v n="$snap_name" 'NR>1 && $1==n {print $0}')"
+    if [[ -z "$row" ]]; then
+      local current
+      current="$(snap list "$snap_name" 2>/dev/null | awk 'NR==2{print $2}')"
+      [[ -n "$current" ]] && report+=("✅ snap:${snap_name}: ${current} (aktuell)")
+      continue
+    fi
+
+    local before after log err
+    before="$(snap list "$snap_name" 2>/dev/null | awk 'NR==2{print $2}')"
+    log="/tmp/openclaw-update-snap-${snap_name}.log"
+    if run_with_retry "snap refresh '$snap_name'" "$log"; then
+      after="$(snap list "$snap_name" 2>/dev/null | awk 'NR==2{print $2}')"
+      report+=("✅ snap:${snap_name}: ${before} → ${after}")
+      updated_count=$((updated_count + 1))
+    else
+      after="$(snap list "$snap_name" 2>/dev/null | awk 'NR==2{print $2}')"
+      err="$(tail -n 1 "$log" 2>/dev/null || echo 'unbekannter Fehler')"
+      report+=("❌ snap:${snap_name}: ${before} → ${after} (${err})")
+      failed_count=$((failed_count + 1))
+    fi
+  done < <(jq -r '.snap[]? // empty' "$WATCHLIST_FILE")
+}
+
+# Print a formatted update report to stdout.
+print_update_report() {
+  local title="${1:-Update-Lauf Ergebnis}"
+  echo ""
+  echo "═══════════════════════════════════════"
+  echo "  ${title}"
+  echo "═══════════════════════════════════════"
+  echo ""
+  for line in "${report[@]}"; do
+    echo "  $line"
+  done
+  echo ""
+  echo "  Updated: ${updated_count} | Fehler: ${failed_count} | Übersprungen: ${skipped_count}"
+  echo "═══════════════════════════════════════"
+}
+
+# Send a formatted update report via Telegram/Matrix.
+notify_update_report() {
+  [[ "${TELEGRAM_NOTIFY:-1}" == "1" && "$OPENCLAW_CLI_AVAILABLE" == "1" ]] || return 0
+
+  local ts status msg
+  ts="$(date '+%d.%m.%Y %H:%M')"
+  status="✅"
+  [[ "$failed_count" -gt 0 ]] && status="⚠️"
+
+  msg="${status} Update-Lauf abgeschlossen (${ts})"$'\n'
+  msg+=$'━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
+  msg+="📊 Updated: ${updated_count} | Fehler: ${failed_count} | Übersprungen: ${skipped_count}"$'\n\n'
+
+  for line in "${report[@]}"; do
+    msg+="$line"$'\n'
+  done
+
+  send_to_all_channels "$msg" || log_warn "Abschluss-Nachricht konnte nicht gesendet werden."
+}
+
+# Full update run: sync watchlist → npm → snap → report → notify.
+# This is the main entry point for update runner scripts.
+run_full_update() {
+  local title="${1:-Update-Lauf Ergebnis}"
+
+  # Auto-discover new packages
+  local sync_count
+  sync_count="$(sync_watchlist_npm "$WATCHLIST_FILE")"
+  [[ "$sync_count" -gt 0 ]] && log_info "Watchlist: $sync_count new global package(s) added."
+
+  # npm packages
+  while IFS= read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    update_npm_if_needed "$pkg"
+  done < <(jq -r '.npm[]? // empty' "$WATCHLIST_FILE")
+
+  # snap packages
+  update_snap_packages
+
+  # Report
+  print_update_report "$title"
+  notify_update_report
+}
+

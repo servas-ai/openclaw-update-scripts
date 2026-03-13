@@ -1,72 +1,202 @@
-# OpenClaw Update Scripts
+<p align="center">
+  <h1 align="center">🦞 OpenClaw Update Scripts</h1>
+  <p align="center">
+    Automated package monitoring, AI-powered changelogs, and one-click updates via Telegram & Matrix.
+  </p>
+</p>
 
-Automatisierte Update-Überwachung und -Durchführung für npm/snap-Pakete mit schönem Telegram/Matrix UI.
+<p align="center">
+  <img src="https://img.shields.io/badge/bash-5.0+-4EAA25?logo=gnubash&logoColor=white" alt="Bash 5.0+">
+  <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=nodedotjs&logoColor=white" alt="Node.js">
+  <img src="https://img.shields.io/badge/tests-40%2F40-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
+</p>
 
-## Features
+---
 
-- 🔔 **Update-Benachrichtigungen** via Telegram und/oder Matrix
-- 📦 **Per-Package Buttons** — einzelne Pakete updaten oder alle auf einmal
-- 📋 **Changelog-Highlights** — zeigt Release Notes direkt in der Nachricht
-- 🛠 **Auto-Heal** — repariert sich automatisch bei kritischen Fehlern
-- 🔄 **Dual-Channel** — Telegram + Matrix gleichzeitig
-- ✅ **E2E-Tests** — mocked Tests ohne Netzwerk-Abhängigkeit
+## What It Does
 
-## Skripte
-
-| Datei | Beschreibung |
-|-------|-------------|
-| `lib/common.sh` | Shared Library (Versionsvergleich, Messaging, npm-Helpers) |
-| `cron/check-updates-notify.sh` | Prüft auf Updates und sendet Telegram/Matrix-Nachricht |
-| `cron/run-all-updates.sh` | Führt alle verfügbaren Updates durch |
-| `cron/run-all-updates-direct.sh` | Direkte Update-Ausführung (ohne Subagent) |
-| `cron/run-all-updates-via-subagent.sh` | Updates via oh-my-opencode Subagent |
-| `cron/auto-update-all.sh` | Auto-Update für Kernpakete (Agent Browser, OpenClaw, Codex) |
-| `cron/update-watchlist.json` | Liste der überwachten Pakete (npm + snap + go) |
-| `scripts/e2e-update-check-validation.sh` | E2E-Tests mit Mocks |
-
-## Quick Start
-
-```bash
-git clone https://github.com/servas-ai/openclaw-update-scripts.git
-cd openclaw-update-scripts
-chmod +x cron/*.sh scripts/*.sh
-
-# Test (Dry-Run)
-DRY_RUN=1 FORCE_NOTIFY=1 bash cron/check-updates-notify.sh
-
-# Crontab: alle 30 Minuten prüfen
-*/30 * * * * cd /path/to/openclaw-update-scripts && bash cron/check-updates-notify.sh
-```
-
-## Telegram-Nachricht Beispiel
+Watches your globally-installed npm, snap, and go packages for updates and notifies you via **Telegram** or **Matrix** with rich UI — including changelog summaries, per-package buttons, and one-click update confirmation.
 
 ```
-🔔 Update verfügbar (13.03.2026 01:30)
+🔔 Update verfügbar (13.03.2026 18:02)
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📦 3 Update(s) gefunden:
 
 • openclaw: 2026.3.2 → 2026.3.11
-  📋 Änderungen 2026.3.2 → 2026.3.11 (5 Releases)
-  📋 Bug fixes and performance improvements
-  📋 New CLI commands for message routing
+  📋 Neues Plugin-System für benutzerdefinierte Erweiterungen
+  📋 Verbesserte CLI-Performance bei großen Workspaces
+  📋 Bugfix für Matrix-Nachrichtenformatierung
 
-• npm: 10.9.4 → 11.11.1
+• @anthropic-ai/claude-code: 2.1.74 → 2.1.75
   📋 ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 Soll i updaten?
 
 [✅ Alle updaten] [❌ Nein, danke]
-[📦 openclaw] [📦 npm]
+[📦 openclaw] [📦 claude-code]
 ```
 
-## Konfiguration
+## Features
 
-Siehe [INSTALL.md](INSTALL.md) für vollständige Setup-Anleitung.
+| Feature | Description |
+|---------|-------------|
+| 🔔 **Smart Notifications** | Telegram + Matrix with dedup (won't spam on repeated checks) |
+| 🤖 **AI Changelogs** | Summarizes release notes into 3 bullet points via OpenClaw AI |
+| 📦 **Auto-Discovery** | Detects newly-installed global npm packages automatically |
+| 🛠 **Auto-Heal** | Self-repairs on critical failures (with 6h cooldown) |
+| ⚡ **Cached Lookups** | Single `npm ls -g` call cached across all package checks |
+| 🧪 **E2E Tests** | 40 mocked tests + Docker integration suite (60 assertions) |
+| 🔄 **Multi-Channel** | Telegram, Matrix, or both simultaneously |
 
-## Hinweise
+## Architecture
 
-- Für produktiven Einsatz Cron-Umgebung, OpenClaw-CLI und Rechte (sudo/gh) prüfen
-- `SAFE_TIMEOUT_SEC=30` (Standard) — bei langsamer Verbindung auf 45+ erhöhen
-- Auto-Heal hat einen 6h Cooldown um Spam zu vermeiden
+```
+openclaw-update-scripts/
+├── lib/
+│   └── common.sh              # Shared library (700+ lines)
+│                               #   ├── Version comparison (sort -V)
+│                               #   ├── Safe execution (timeout + retry)
+│                               #   ├── npm cache + version lookups
+│                               #   ├── Messaging (Telegram / Matrix)
+│                               #   ├── GitHub release + npm changelog
+│                               #   ├── AI summarization (OpenClaw agent)
+│                               #   ├── Dynamic package discovery
+│                               #   ├── Watchlist sync (batched jq)
+│                               #   └── Update runner (shared logic)
+├── cron/
+│   ├── check-updates-notify.sh # Cron: check for updates → notify
+│   ├── run-all-updates.sh      # Run all updates (via subagent)
+│   ├── run-all-updates-direct.sh # Run all updates (direct)
+│   ├── run-all-updates-via-subagent.sh # Delegates to AI subagent
+│   ├── auto-update-all.sh      # Auto-update core packages
+│   └── update-watchlist.json   # Package watchlist
+├── scripts/
+│   ├── e2e-update-check-validation.sh # Mocked test suite (40 tests)
+│   ├── docker-e2e-test.sh      # Docker E2E test (60 assertions)
+│   └── run-docker-e2e.sh       # Docker test runner
+├── Dockerfile.e2e              # E2E test container
+├── INSTALL.md                  # Full setup guide
+└── README.md
+```
+
+## Quick Start
+
+```bash
+# 1. Clone
+git clone https://github.com/servas-ai/openclaw-update-scripts.git
+cd openclaw-update-scripts
+
+# 2. Make executable
+chmod +x cron/*.sh scripts/*.sh
+
+# 3. Test (dry-run, no messages sent)
+DRY_RUN=1 FORCE_NOTIFY=1 bash cron/check-updates-notify.sh
+
+# 4. Run tests
+bash scripts/e2e-update-check-validation.sh
+```
+
+## Configuration
+
+### Watchlist (`cron/update-watchlist.json`)
+
+```json
+{
+  "npm": ["openclaw", "@anthropic-ai/claude-code", "npm", "vibe-kanban"],
+  "npm_exclude": ["create-better-openclaw"],
+  "snap": ["chromium", "snapd"],
+  "go": ["gt"]
+}
+```
+
+New globally-installed npm packages are **auto-discovered** and added on each check. Packages you don't want tracked go in `npm_exclude`.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHAT_ID` | `-1003766760589` | Telegram Chat-ID / Matrix Room |
+| `THREAD_ID` | `16` | Telegram Forum Thread-ID |
+| `CHANNEL` | `telegram` | `telegram`, `matrix`, or `both` |
+| `DRY_RUN` | `0` | Print output without sending |
+| `FORCE_NOTIFY` | `0` | Send even if nothing changed |
+| `AI_SUMMARIZE` | `auto` | AI summaries: `auto`, `1`, `0` |
+| `AI_SUMMARIZE_TIMEOUT` | `30` | AI response timeout (seconds) |
+| `SAFE_TIMEOUT_SEC` | `30` | npm lookup timeout (seconds) |
+| `AUTO_HEAL_ENABLED` | `1` | Auto-repair on critical failures |
+| `TELEGRAM_NOTIFY` | `1` | Send completion report |
+
+### Cron Setup
+
+```bash
+# Check every 30 minutes
+*/30 * * * * cd /path/to/openclaw-update-scripts && bash cron/check-updates-notify.sh
+
+# Daily auto-update at 03:00 (optional)
+0 3 * * * cd /path/to/openclaw-update-scripts && bash cron/auto-update-all.sh
+```
+
+## AI Changelog Summarization
+
+When enabled, release notes are fetched from **GitHub Releases** + **npm** and summarized into 3 concise bullet points via `openclaw agent --local`.
+
+The AI model is configurable — works with any OpenAI-compatible API:
+
+```bash
+openclaw config set models.providers.my-api.baseUrl "https://api.example.com/v1"
+openclaw config set models.providers.my-api.apiKey "sk-..."
+openclaw config set models.providers.my-api.api "openai-completions"
+```
+
+Falls back to raw changelog extraction if AI is unavailable.
+
+## Testing
+
+```bash
+# Mocked unit + integration tests (no network)
+bash scripts/e2e-update-check-validation.sh
+# Expected: ✅ ALL TESTS PASSED: 40/40
+
+# Docker E2E (full environment, requires Docker)
+bash scripts/run-docker-e2e.sh
+# Expected: ✅ ALL TESTS PASSED: 60/60
+
+# Live dry-run (real network, no messages sent)
+DRY_RUN=1 FORCE_NOTIFY=1 bash cron/check-updates-notify.sh
+```
+
+## How It Works
+
+```mermaid
+flowchart TD
+    A[Cron Trigger] --> B[sync_watchlist_npm]
+    B --> C[Auto-discover new packages]
+    C --> D[npm packages loop]
+    D --> E{Update available?}
+    E -->|Yes| F[gather_raw_changelog]
+    F --> G{AI enabled?}
+    G -->|Yes| H[ai_summarize_changelog]
+    G -->|No| I[build_raw_points]
+    H -->|Fail| I
+    H -->|OK| J[Build notification]
+    I --> J
+    E -->|No| D
+    J --> K[Dedup check]
+    K -->|New| L[Send via Telegram/Matrix]
+    K -->|Same| M[Exit silently]
+```
+
+## Full Setup
+
+See **[INSTALL.md](INSTALL.md)** for complete installation guide including:
+- OpenClaw CLI setup
+- Agent configuration & system prompts
+- Matrix integration
+- Docker E2E testing
+
+## License
+
+MIT

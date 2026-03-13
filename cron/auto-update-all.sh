@@ -12,32 +12,34 @@ ts="$(date '+%Y-%m-%d %H:%M:%S')"
 report=()
 
 run_update() {
-  local name="$1"
-  local key="$2"
-  local version_cmd="$3"
-  local update_cmd="$4"
+  local name="$1" key="$2" version_cmd="$3" update_cmd="$4"
+  local before after log
 
-  local before after status
-  before="$(bash -lc "$version_cmd" 2>/dev/null || echo 'unknown')"
-  if bash -lc "$update_cmd" >"/tmp/openclaw-update-${key}.log" 2>&1; then
-    status="ok"
-  else
-    status="fail"
-  fi
-  after="$(bash -lc "$version_cmd" 2>/dev/null || echo 'unknown')"
+  before="$(safe_run "$version_cmd" || echo 'unknown')"
+  log="/tmp/openclaw-update-${key}.log"
 
-  if [[ "$status" == "ok" ]]; then
+  if run_with_retry "$update_cmd" "$log"; then
+    after="$(safe_run "$version_cmd" || echo 'unknown')"
     report+=("✅ ${name}: ${before} → ${after}")
   else
+    after="$(safe_run "$version_cmd" || echo 'unknown')"
     local err
-    err="$(tail -n 1 "/tmp/openclaw-update-${key}.log" 2>/dev/null || echo 'unknown error')"
-    report+=("❌ ${name}: ${before} → ${after} (${err})")
+    err="$(tail -n 1 "$log" 2>/dev/null || echo 'unknown error')"
+    report+=("❌ ${name}: ${before} → ${after} ($(shorten_line "$err"))")
   fi
 }
 
-run_update "Agent Browser" "agent-browser" "/usr/bin/agent-browser --version | awk '{print \$2}'" "update-agent-browser"
-run_update "OpenClaw" "openclaw" "/usr/bin/openclaw --version" "update-openclaw"
-run_update "Codex CLI" "codex" "/usr/bin/codex --version | awk '{print \$2}'" "update-codex-cli"
+run_update "Agent Browser" "agent-browser" \
+  "/usr/bin/agent-browser --version | awk '{print \$2}'" \
+  "update-agent-browser"
+
+run_update "OpenClaw" "openclaw" \
+  "/usr/bin/openclaw --version" \
+  "update-openclaw"
+
+run_update "Codex CLI" "codex" \
+  "/usr/bin/codex --version | awk '{print \$2}'" \
+  "update-codex-cli"
 
 msg="🔄 VCVM Auto-Update (${ts})"$'\n'
 msg+=$'━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
