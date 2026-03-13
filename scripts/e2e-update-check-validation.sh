@@ -1094,6 +1094,503 @@ suite "Unit Tests: shorten_line edge cases"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 38: Unit Tests — update_npm_if_needed (shared runner)
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: update_npm_if_needed"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+
+  # Mock: pkg at 1.0.0, latest 2.0.0, update command succeeds and bumps version
+  setup_mocks \
+    '{"dependencies":{"runner-pkg":{"version":"1.0.0"}}}' \
+    '{"runner-pkg":"2.0.0"}' '{}' 0
+
+  # Create a mock npm that also handles "install -g" by updating the mock data
+  cat > "$BIN_DIR/npm" <<MOCK_UPD
+#!/usr/bin/env bash
+if [[ "\$*" == *"ls -g"* && "\$*" == *"--json"* ]]; then
+  if [[ -f "$MOCK_DATA/npm-ls-updated.json" ]]; then
+    cat "$MOCK_DATA/npm-ls-updated.json"
+  else
+    cat "$MOCK_DATA/npm-ls.json"
+  fi
+  exit 0
+fi
+if [[ "\$*" == *"install -g"* ]]; then
+  echo '{"dependencies":{"runner-pkg":{"version":"2.0.0"}}}' > "$MOCK_DATA/npm-ls-updated.json"
+  exit 0
+fi
+if [[ "\$*" == *"view"* && "\$*" == *"version"* ]]; then
+  for pkg in \$(jq -r 'keys[]' "$MOCK_DATA/npm-versions.json" 2>/dev/null); do
+    if [[ "\$*" == *"\$pkg"* ]]; then
+      jq -r --arg p "\$pkg" '.[\$p] // empty' "$MOCK_DATA/npm-versions.json"
+      exit 0
+    fi
+  done
+fi
+exit 0
+MOCK_UPD
+  chmod +x "$BIN_DIR/npm"
+  source "$COMMON_LIB"
+
+  report=()
+  updated_count=0
+  failed_count=0
+  skipped_count=0
+
+  update_npm_if_needed "runner-pkg"
+  assert_eq "$updated_count" "1" "runner: updated_count incremented"
+  assert_contains "${report[*]}" "runner-pkg" "runner: pkg in report"
+  assert_contains "${report[*]}" "→" "runner: arrow in report"
+
+  # Cleanup
+  rm -f "$MOCK_DATA/npm-ls-updated.json"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 39: Unit Tests — update_npm_if_needed (already current)
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: update_npm_if_needed (current)"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"current-pkg":{"version":"5.0.0"}}}' \
+    '{"current-pkg":"5.0.0"}' '{}' 0
+  source "$COMMON_LIB"
+
+  report=()
+  updated_count=0
+  failed_count=0
+  skipped_count=0
+
+  update_npm_if_needed "current-pkg"
+  assert_eq "$updated_count" "0" "current: no update"
+  assert_contains "${report[*]}" "aktuell" "current: marked as current"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 40: Unit Tests — update_npm_if_needed (missing version)
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: update_npm_if_needed (skipped)"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{}}' \
+    '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  report=()
+  updated_count=0
+  failed_count=0
+  skipped_count=0
+
+  update_npm_if_needed "ghost-pkg"
+  assert_eq "$skipped_count" "1" "skipped: count incremented"
+  assert_contains "${report[*]}" "übersprungen" "skipped: marked as skipped"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 41: Unit Tests — print_update_report
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: print_update_report"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  report=("✅ pkg-a: 1.0.0 → 2.0.0" "❌ pkg-b: failed")
+  updated_count=1
+  failed_count=1
+  skipped_count=0
+
+  output="$(print_update_report "Test-Lauf")"
+  assert_contains "$output" "Test-Lauf" "report: custom title"
+  assert_contains "$output" "═══" "report: has separator"
+  assert_contains "$output" "pkg-a" "report: includes pkg-a"
+  assert_contains "$output" "pkg-b" "report: includes pkg-b"
+  assert_contains "$output" "Updated: 1" "report: updated count"
+  assert_contains "$output" "Fehler: 1" "report: failed count"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 42: Unit Tests — run_with_retry
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: run_with_retry"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  log="$TMP_DIR/retry-test.log"
+
+  # Success on first try
+  if run_with_retry "echo 'success'" "$log" 5; then
+    pass "retry: succeeds on first try"
+  else
+    fail "retry: should succeed"
+  fi
+  assert_contains "$(cat "$log")" "success" "retry: output in log"
+
+  # Failure (command doesn't exist)
+  log2="$TMP_DIR/retry-fail.log"
+  if run_with_retry "false" "$log2" 5; then
+    fail "retry: should fail on bad command"
+  else
+    pass "retry: correctly fails after retries"
+  fi
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 43: Unit Tests — format_update_message
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: format_update_message"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # We need to source the function from check-updates-notify.sh
+  eval "$(sed -n '/^format_update_message/,/^}/p' "$TARGET_SCRIPT")"
+
+  lines=("• test-pkg: 1.0.0 → 2.0.0")
+  details=("  📋 Feature A" "  📋 Feature B" "  📋 Feature C")
+  diagnostics=()
+  changelog_warnings=()
+
+  msg="$(format_update_message 1)"
+  assert_contains "$msg" "🔔" "fmt_msg: bell emoji"
+  assert_contains "$msg" "1 Update(s)" "fmt_msg: count"
+  assert_contains "$msg" "test-pkg" "fmt_msg: package name"
+  assert_contains "$msg" "Feature A" "fmt_msg: detail line 1"
+  assert_contains "$msg" "Feature B" "fmt_msg: detail line 2"
+  assert_contains "$msg" "Soll i updaten?" "fmt_msg: CTA"
+  assert_not_contains "$msg" "Hinweise" "fmt_msg: no warnings"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 44: Unit Tests — format_update_message with warnings
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: format_update_message (warnings)"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  eval "$(sed -n '/^format_update_message/,/^}/p' "$TARGET_SCRIPT")"
+
+  lines=("• pkg: 1.0 → 2.0")
+  details=("  📋 a" "  📋 b" "  📋 c")
+  diagnostics=("Version lookup failed for ghost")
+  changelog_warnings=("AI summary timeout")
+
+  msg="$(format_update_message 1)"
+  assert_contains "$msg" "Hinweise" "fmt_warn: has warnings section"
+  assert_contains "$msg" "Version lookup failed" "fmt_warn: diagnostic included"
+  assert_contains "$msg" "AI summary timeout" "fmt_warn: changelog warning included"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 45: Unit Tests — format_auto_heal_message
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: format_auto_heal_message"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  eval "$(sed -n '/^format_auto_heal_message/,/^}/p' "$TARGET_SCRIPT")"
+
+  critical_lookup_failures=("openclaw:latest" "npm:current")
+  auto_heal_status_line="Auto-Heal gestartet via subagent"
+  AUTO_HEAL_LOG="/tmp/test-heal.log"
+  updates=()
+  lines=()
+  diagnostics=()
+  changelog_warnings=()
+
+  msg="$(format_auto_heal_message)"
+  assert_contains "$msg" "🛠" "heal_msg: wrench emoji"
+  assert_contains "$msg" "Auto-Heal" "heal_msg: title"
+  assert_contains "$msg" "openclaw" "heal_msg: affected package"
+  assert_contains "$msg" "subagent" "heal_msg: runner info"
+  assert_contains "$msg" "/tmp/test-heal.log" "heal_msg: log path"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 46: Unit Tests — read/write_last_message_state
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: read/write_last_message_state"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  eval "$(sed -n '/^read_last_message_id/,/^}/p' "$TARGET_SCRIPT")"
+  eval "$(sed -n '/^write_last_message_state/,/^}/p' "$TARGET_SCRIPT")"
+
+  state_file="$TMP_DIR/msg-state-test.json"
+
+  # No file → empty
+  result="$(read_last_message_id "$TMP_DIR/nonexistent.json")"
+  assert_empty "$result" "state: missing file → empty"
+
+  # Write and read back
+  write_last_message_state "$state_file" "msg-42"
+  result2="$(read_last_message_id "$state_file")"
+  assert_eq "$result2" "msg-42" "state: write then read"
+
+  # Verify JSON structure
+  assert_contains "$(cat "$state_file")" "updated_at" "state: has timestamp"
+  assert_contains "$(cat "$state_file")" "updated_ts" "state: has unix ts"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 47: Integration — Dedup detects new update
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Integration: Dedup detects payload change"
+
+setup_mocks \
+  '{"dependencies":{"dup-a":{"version":"1.0.0"},"openclaw":{"version":"99.0.0"}}}' \
+  '{"dup-a":"2.0.0","openclaw":"99.0.0"}' \
+  '{}' 0
+wl="$(make_watchlist 'dup-a')"
+dedup_file="$TMP_DIR/.dedup-change.json"
+
+# First run: dup-a at 1.0.0→2.0.0
+PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=0 SAFE_RUN_LOGIN=0 \
+WATCHLIST_FILE="$wl" STATE_FILE="$dedup_file" \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+bash "$TARGET_SCRIPT" >"$TMP_DIR/dd-1.txt" 2>/dev/null || true
+
+assert_not_empty "$(cat "$TMP_DIR/dd-1.txt")" "dedup-change: first run → output"
+
+# Add a new package with update
+setup_mocks \
+  '{"dependencies":{"dup-a":{"version":"1.0.0"},"dup-b":{"version":"3.0.0"},"openclaw":{"version":"99.0.0"}}}' \
+  '{"dup-a":"2.0.0","dup-b":"4.0.0","openclaw":"99.0.0"}' \
+  '{}' 0
+wl2="$TMP_DIR/wl-dedup2.json"
+echo '{"npm":["dup-a","dup-b"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl2"
+
+PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=0 SAFE_RUN_LOGIN=0 \
+WATCHLIST_FILE="$wl2" STATE_FILE="$dedup_file" \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+bash "$TARGET_SCRIPT" >"$TMP_DIR/dd-2.txt" 2>/dev/null || true
+
+assert_not_empty "$(cat "$TMP_DIR/dd-2.txt")" "dedup-change: changed payload → re-notify"
+assert_contains "$(cat "$TMP_DIR/dd-2.txt")" "dup-b" "dedup-change: new pkg in output"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 48: Unit Tests — safe_run / safe_run_all
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: safe_run / safe_run_all"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # safe_run returns only first line
+  result="$(safe_run 'printf "line1\nline2\nline3"')"
+  assert_eq "$result" "line1" "safe_run: returns first line only"
+
+  # safe_run_all returns all lines
+  result_all="$(safe_run_all 'printf "line1\nline2\nline3"')"
+  assert_contains "$result_all" "line1" "safe_run_all: has line1"
+  assert_contains "$result_all" "line2" "safe_run_all: has line2"
+  assert_contains "$result_all" "line3" "safe_run_all: has line3"
+
+  # safe_run with failing command → empty (no crash)
+  result_fail="$(safe_run 'exit 1')"
+  assert_empty "$result_fail" "safe_run: failing cmd → empty"
+
+  # safe_run strips carriage returns
+  result_cr="$(safe_run 'printf "hello\r"')"
+  assert_eq "$result_cr" "hello" "safe_run: strips CR"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 49: Integration — Large watchlist (10 packages)
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Integration: Large watchlist (10 packages)"
+
+large_deps='{"dependencies":{'
+large_vers='{'
+for i in $(seq 1 10); do
+  [[ $i -gt 1 ]] && large_deps+=',' && large_vers+=','
+  large_deps+="\"pkg-$i\":{\"version\":\"1.0.$i\"}"
+  large_vers+="\"pkg-$i\":\"2.0.$i\""
+done
+large_deps+=',"openclaw":{"version":"99.0.0"}}}'
+large_vers+=',"openclaw":"99.0.0"}'
+
+setup_mocks "$large_deps" "$large_vers" '{}' 0
+
+wl_large="$TMP_DIR/wl-large.json"
+pkgs=""
+for i in $(seq 1 10); do
+  [[ -n "$pkgs" ]] && pkgs+=","
+  pkgs+="\"pkg-$i\""
+done
+echo "{\"npm\":[$pkgs],\"npm_exclude\":[],\"snap\":[],\"go\":[]}" > "$wl_large"
+
+PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
+WATCHLIST_FILE="$wl_large" STATE_FILE="$TMP_DIR/.state-large.json" \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+bash "$TARGET_SCRIPT" >"$TMP_DIR/large-out.txt" 2>/dev/null || true
+
+_LARGE_OUT="$(cat "$TMP_DIR/large-out.txt")"
+assert_contains "$_LARGE_OUT" "10 Update(s)" "large: 10 updates detected"
+assert_contains "$_LARGE_OUT" "pkg-1" "large: first pkg present"
+assert_contains "$_LARGE_OUT" "pkg-10" "large: last pkg present"
+assert_contains "$_LARGE_OUT" "Alle updaten" "large: alle button"
+
+# Buttons JSON valid
+large_buttons="$(echo "$_LARGE_OUT" | sed -n '/---BUTTONS---/,$ p' | tail -n +2)"
+echo "$large_buttons" | jq . >/dev/null 2>&1 && pass "large: buttons valid JSON" || fail "large: buttons invalid JSON"
+
+# Max 4 per-package buttons enforced
+assert_not_contains "$large_buttons" "pkg-5" "large: max 4 per-pkg buttons (pkg-5 excluded)"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 50: Unit Tests — npm_exclude filtering
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: npm_exclude comprehensive"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"keep":{"version":"1.0.0"},"skip-a":{"version":"2.0.0"},"skip-b":{"version":"3.0.0"},"@scope/keep":{"version":"4.0.0"}}}' \
+    '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  wl_file="$TMP_DIR/wl-exclude.json"
+  echo '{"npm":["keep"],"npm_exclude":["skip-a","skip-b"],"snap":[],"go":[]}' > "$wl_file"
+
+  new="$(discover_new_global_npm_packages "$wl_file")"
+  assert_not_contains "$new" "skip-a" "exclude: skip-a filtered"
+  assert_not_contains "$new" "skip-b" "exclude: skip-b filtered"
+  assert_contains "$new" "@scope/keep" "exclude: @scope/keep not filtered"
+
+  # After sync, only @scope/keep should be added
+  count="$(sync_watchlist_npm "$wl_file")"
+  assert_eq "$count" "1" "exclude: only 1 new pkg added"
+
+  wl_content="$(cat "$wl_file")"
+  assert_contains "$wl_content" "@scope/keep" "exclude: @scope/keep in watchlist"
+  # Check .npm array specifically (not raw file, since npm_exclude also contains skip-a)
+  npm_arr="$(echo "$wl_content" | jq -r '.npm[]')"
+  assert_not_contains "$npm_arr" "skip-a" "exclude: skip-a not in npm array"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 51: Unit Tests — send_message_json
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: send_message_json"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0
+  export OPENCLAW_BIN="$BIN_DIR/openclaw"
+  export CHANNEL="telegram" CHAT_ID="-999" THREAD_ID="7"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  rm -f "$MOCK_DATA/sent-messages.log"
+  source "$COMMON_LIB"
+
+  # send_message_json should pass --json flag
+  send_message_json "test json msg" "" "telegram" >/dev/null 2>&1
+
+  if [[ -f "$MOCK_DATA/sent-messages.log" ]]; then
+    log="$(cat "$MOCK_DATA/sent-messages.log")"
+    assert_contains "$log" "--json" "json_msg: has --json flag"
+    assert_contains "$log" "test json msg" "json_msg: message passed"
+    assert_contains "$log" "--thread-id 7" "json_msg: thread-id for telegram"
+  else
+    fail "json_msg: no log written"
+  fi
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 52: Unit Tests — send_message channel routing
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: send_message channel routing"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0
+  export OPENCLAW_BIN="$BIN_DIR/openclaw"
+  export CHAT_ID="-111" THREAD_ID="5"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # Matrix channel: should NOT have thread-id
+  rm -f "$MOCK_DATA/sent-messages.log"
+  send_message "matrix msg" "" "matrix" >/dev/null 2>&1
+
+  if [[ -f "$MOCK_DATA/sent-messages.log" ]]; then
+    log="$(cat "$MOCK_DATA/sent-messages.log")"
+    assert_contains "$log" "--channel matrix" "route: matrix channel"
+    assert_not_contains "$log" "--thread-id" "route: no thread-id for matrix"
+  else
+    fail "route: no log for matrix"
+  fi
+
+  # Buttons only for telegram
+  rm -f "$MOCK_DATA/sent-messages.log"
+  send_message "btn msg" '[[{"text":"OK"}]]' "matrix" >/dev/null 2>&1
+
+  if [[ -f "$MOCK_DATA/sent-messages.log" ]]; then
+    log2="$(cat "$MOCK_DATA/sent-messages.log")"
+    assert_not_contains "$log2" "--buttons" "route: no buttons for matrix"
+  else
+    fail "route: no log for matrix buttons"
+  fi
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 53: Unit Tests — sync_watchlist_npm idempotent (batch)
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: sync_watchlist_npm batch + sort"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"zeta":{"version":"1.0.0"},"alpha":{"version":"2.0.0"},"beta":{"version":"3.0.0"}}}' \
+    '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  wl_file="$TMP_DIR/wl-batch.json"
+  echo '{"npm":[],"npm_exclude":[],"snap":[],"go":[]}' > "$wl_file"
+
+  count="$(sync_watchlist_npm "$wl_file")"
+  assert_eq "$count" "3" "batch: added 3 packages"
+
+  # Verify sorted order
+  wl_content="$(cat "$wl_file")"
+  first="$(echo "$wl_content" | jq -r '.npm[0]')"
+  last="$(echo "$wl_content" | jq -r '.npm[-1]')"
+  assert_eq "$first" "alpha" "batch: sorted first = alpha"
+  assert_eq "$last" "zeta" "batch: sorted last = zeta"
+
+  # Second run = idempotent
+  count2="$(sync_watchlist_npm "$wl_file")"
+  assert_eq "$count2" "0" "batch: idempotent re-run"
+
+  # File integrity preserved
+  npm_len="$(echo "$wl_content" | jq '.npm | length')"
+  assert_eq "$npm_len" "3" "batch: exactly 3 entries"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # RESULTS
 # ═══════════════════════════════════════════════════════════════════════════════
 TESTS_PASSED=$(cat "$_PASS_FILE")
