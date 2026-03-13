@@ -48,7 +48,7 @@ Soll i updaten?
 | 📦 **Auto-Discovery** | Detects newly-installed global npm packages automatically |
 | 🛠 **Auto-Heal** | Self-repairs on critical failures (with 6h cooldown) |
 | ⚡ **Cached Lookups** | Single `npm ls -g` call cached across all package checks |
-| 🧪 **E2E Tests** | 40 mocked tests + Docker integration suite (60 assertions) |
+| 🧪 **E2E Tests** | 234 mocked tests (53 suites) + Docker integration suite (60 assertions) |
 | 🔄 **Multi-Channel** | Telegram, Matrix, or both simultaneously |
 
 ## Architecture
@@ -74,9 +74,10 @@ openclaw-update-scripts/
 │   ├── auto-update-all.sh      # Auto-update core packages
 │   └── update-watchlist.json   # Package watchlist
 ├── scripts/
-│   ├── e2e-update-check-validation.sh # Mocked test suite (40 tests)
+│   ├── e2e-update-check-validation.sh # Mocked test suite (234 tests)
 │   ├── docker-e2e-test.sh      # Docker E2E test (60 assertions)
 │   └── run-docker-e2e.sh       # Docker test runner
+├── SKILL.md                    # AI-agent skill instructions
 ├── Dockerfile.e2e              # E2E test container
 ├── INSTALL.md                  # Full setup guide
 └── README.md
@@ -158,7 +159,7 @@ Falls back to raw changelog extraction if AI is unavailable.
 ```bash
 # Mocked unit + integration tests (no network)
 bash scripts/e2e-update-check-validation.sh
-# Expected: ✅ ALL TESTS PASSED: 40/40
+# Expected: ✅ ALL TESTS PASSED: 234/234
 
 # Docker E2E (full environment, requires Docker)
 bash scripts/run-docker-e2e.sh
@@ -189,13 +190,26 @@ flowchart TD
     K -->|Same| M[Exit silently]
 ```
 
+## AI Agent Integration
+
+This project includes a **[SKILL.md](SKILL.md)** — a machine-readable instruction file that enables AI coding agents (OpenClaw, Codex, Claude, etc.) to:
+
+- **Install and configure** the entire system autonomously
+- **Understand the function API** (30+ documented functions with signatures)
+- **Modify the codebase** using the modification guide
+- **Troubleshoot** common issues using the diagnostic table
+- **Operate** the scripts via documented data flow
+
+AI agents should read `SKILL.md` first for complete context.
+
 ## Full Setup
 
-See **[INSTALL.md](INSTALL.md)** for complete installation guide including:
-- OpenClaw CLI setup
-- Agent configuration & system prompts
-- Matrix integration
-- Docker E2E testing
+See **[INSTALL.md](INSTALL.md)** for the complete step-by-step installation guide with:
+- ✅ Verification commands for each step
+- Prerequisites check/install table
+- 3 model provider options (custom proxy, OpenAI direct, no AI)
+- Custom agent configuration with system prompts
+- Cron setup and troubleshooting
 
 ## License
 
