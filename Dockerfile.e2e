@@ -1,0 +1,19 @@
+FROM node:22-bookworm
+
+# System deps
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends jq curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install OpenClaw globally
+RUN npm install -g openclaw@latest
+
+# Create workspace
+WORKDIR /workspace
+COPY . /workspace/
+
+# Make scripts executable
+RUN chmod +x cron/*.sh scripts/*.sh
+
+# Default entrypoint: run the docker E2E test
+ENTRYPOINT ["bash", "scripts/docker-e2e-test.sh"]

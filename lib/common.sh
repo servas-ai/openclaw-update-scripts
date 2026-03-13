@@ -272,54 +272,151 @@ release_summary_line() {
   printf '%s' "$(shorten_line "$line")"
 }
 
-build_points_from_github_releases() {
-  local pkg="$1"
-  local current="$2"
-  local latest="$3"
-  local -n _out_points=$4
+# ─── Gather raw changelog from all sources ────────────────────────────────────
+# Collects raw release notes from GitHub + npm into a single context string.
+gather_raw_changelog() {
+  local pkg="$1" current="$2" latest="$3"
+  local context="" repo releases_json count_in_range=0
 
-  _out_points=()
-
-  command -v curl >/dev/null 2>&1 || return 1
-  command -v jq >/dev/null 2>&1 || return 1
-
-  local repo releases_json line tag body norm summary count_in_range
+  # GitHub releases
   repo="$(github_repo_from_npm "$pkg" || true)"
-  [[ -z "$repo" ]] && return 1
+  if [[ -n "$repo" ]]; then
+    releases_json="$(timeout 12 curl -fsSL "https://api.github.com/repos/${repo}/releases?per_page=40" 2>/dev/null || true)"
+    if [[ -n "$releases_json" ]]; then
+      while IFS= read -r line; do
+        local tag body norm
+        tag="$(printf '%s' "$line" | jq -r '.tag')"
+        body="$(printf '%s' "$line" | jq -r '.body')"
+        norm="$(normalize_version "$tag")"
+        [[ -z "$norm" ]] && continue
 
-  releases_json="$(timeout 12 curl -fsSL "https://api.github.com/repos/${repo}/releases?per_page=40" 2>/dev/null || true)"
-  if [[ -z "$releases_json" ]]; then
-    return 1
-  fi
-
-  count_in_range=0
-  while IFS= read -r line; do
-    tag="$(printf '%s' "$line" | jq -r '.tag')"
-    body="$(printf '%s' "$line" | jq -r '.body')"
-    norm="$(normalize_version "$tag")"
-    [[ -z "$norm" ]] && continue
-
-    if version_gt "$norm" "$current" && version_lte "$norm" "$latest"; then
-      count_in_range=$((count_in_range + 1))
-      summary="$(release_summary_line "$body")"
-      if [[ -z "$summary" ]]; then
-        _out_points+=("${norm}: Release notes verfügbar")
-      else
-        _out_points+=("${norm}: ${summary}")
-      fi
-      [[ "${#_out_points[@]}" -ge 3 ]] && break
+        if version_gt "$norm" "$current" && version_lte "$norm" "$latest"; then
+          count_in_range=$((count_in_range + 1))
+          context+="--- Release ${norm} ---"$'\n'
+          context+="$(printf '%s' "$body" | head -n 30)"$'\n\n'
+          [[ $count_in_range -ge 5 ]] && break
+        fi
+      done < <(printf '%s' "$releases_json" | jq -c '.[] | {tag:(.tag_name // ""), body:(.body // "")}')
     fi
-  done < <(printf '%s' "$releases_json" | jq -c '.[] | {tag:(.tag_name // ""), body:(.body // "")}')
-
-  if [[ "${#_out_points[@]}" -gt 0 ]]; then
-    _out_points=("Änderungen ${current} → ${latest} (${count_in_range} Releases)" "${_out_points[@]}")
-    _out_points=("${_out_points[@]:0:3}")
-    return 0
   fi
 
+  # npm description as additional context
+  local desc
+  desc="$(safe_run "npm view '$pkg@$latest' description")"
+  if [[ -n "$desc" ]]; then
+    context+="--- npm description ---"$'\n'"${desc}"$'\n\n'
+  fi
+
+  # npm changelog (if available via npm view)
+  local changelog
+  changelog="$(safe_run "npm view '$pkg@$latest' changelog" 2>/dev/null || true)"
+  if [[ -n "$changelog" && "$changelog" != "undefined" ]]; then
+    context+="--- npm changelog ---"$'\n'"$(printf '%s' "$changelog" | head -n 20)"$'\n\n'
+  fi
+
+  printf '%s' "$context"
+}
+
+# ─── AI-powered summary via OpenClaw ──────────────────────────────────────────
+# Summarizes raw changelog into exactly 3 concise bullet points.
+# Falls back to raw extraction if AI is unavailable or fails.
+AI_SUMMARIZE="${AI_SUMMARIZE:-auto}"
+AI_SUMMARIZE_TIMEOUT="${AI_SUMMARIZE_TIMEOUT:-30}"
+
+ai_summarize_changelog() {
+  local pkg="$1" current="$2" latest="$3" raw_context="$4"
+  local -n _ai_out=$5
+  _ai_out=()
+
+  # Check if AI summarization is enabled
+  local use_ai=0
+  if [[ "$AI_SUMMARIZE" == "1" || "$AI_SUMMARIZE" == "true" ]]; then
+    use_ai=1
+  elif [[ "$AI_SUMMARIZE" == "auto" && "$OPENCLAW_CLI_AVAILABLE" == "1" ]]; then
+    use_ai=1
+  fi
+  [[ "$use_ai" -eq 0 ]] && return 1
+
+  [[ -z "$raw_context" ]] && return 1
+
+  local prompt ai_response
+  prompt="Fasse die folgenden Release-Notes/Changelog-Infos für das npm-Package \"${pkg}\" (Update von ${current} auf ${latest}) in genau 3 kurzen, prägnanten deutschen Bullet Points zusammen. Jeder Punkt maximal 120 Zeichen. Keine Emojis. Nur die 3 wichtigsten Änderungen. Antworte NUR mit den 3 Punkten, einer pro Zeile, ohne Nummerierung oder Aufzählungszeichen.
+
+${raw_context}"
+
+  ai_response="$(timeout "$AI_SUMMARIZE_TIMEOUT" "$OPENCLAW_BIN" agent \
+    --local \
+    --thinking off \
+    --message "$prompt" 2>/dev/null || true)"
+
+  [[ -z "$ai_response" ]] && return 1
+
+  # Parse the 3 lines from the AI response
+  local line_count=0
+  while IFS= read -r line; do
+    line="$(printf '%s' "$line" | sed -E 's/^\s*[-*•·⁃▸▹►»]\s*//' | sed -E 's/^\s*[0-9]+[.):]\s*//' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')"
+    [[ -z "$line" ]] && continue
+    _ai_out+=("$(shorten_line "$line")")
+    line_count=$((line_count + 1))
+    [[ $line_count -ge 3 ]] && break
+  done <<< "$ai_response"
+
+  [[ "${#_ai_out[@]}" -ge 1 ]] && return 0
   return 1
 }
 
+# ─── Fallback: extract points from raw data without AI ────────────────────────
+# Accepts optional pre-gathered raw_context ($4) to avoid duplicate API calls.
+build_raw_points() {
+  local pkg="$1" current="$2" latest="$3"
+  local -n _raw_out=$4
+  local raw_context="${5:-}"
+  _raw_out=()
+
+  # If we have pre-gathered context, extract points from it directly
+  if [[ -n "$raw_context" ]]; then
+    local _ctx_points=()
+    local release_count=0
+    while IFS= read -r block; do
+      [[ -z "$block" ]] && continue
+      if [[ "$block" =~ ^---\ Release\ ([0-9][^ ]*)\ ---$ ]]; then
+        release_count=$((release_count + 1))
+        continue
+      fi
+      # Skip section headers
+      [[ "$block" =~ ^---\ (npm|changelog) ]] && continue
+      # Extract first meaningful line from each block
+      local summary
+      summary="$(release_summary_line "$block")"
+      if [[ -n "$summary" && "${#_ctx_points[@]}" -lt 3 ]]; then
+        _ctx_points+=("$(shorten_line "$summary")")
+      fi
+    done <<< "$raw_context"
+
+    if [[ "${#_ctx_points[@]}" -gt 0 ]]; then
+      local header="Änderungen ${current} → ${latest}"
+      [[ $release_count -gt 0 ]] && header+=" (${release_count} Releases)"
+      _raw_out=("$header" "${_ctx_points[@]}")
+      _raw_out=("${_raw_out[@]:0:3}")
+      return 0
+    fi
+  fi
+
+  # Last resort: only npm description (no extra API call)
+  local desc
+  desc="$(safe_run "npm view '$pkg@$latest' description")"
+  if [[ -n "$desc" ]]; then
+    _raw_out+=("$(shorten_line "$desc")")
+  else
+    _raw_out+=("Änderungen ${current} → ${latest} (Details nicht direkt verfügbar)")
+  fi
+  _raw_out+=("Keine Infos gefunden")
+  _raw_out+=("Details: npm view ${pkg}@${latest} readme")
+
+  return 0
+}
+
+# ─── Main entry: get 3 changelog points for a package ─────────────────────────
 package_whats_new_points() {
   local pkg="$1"
   local current="$2"
@@ -327,45 +424,26 @@ package_whats_new_points() {
   local -n _pkg_out_points=$4
   local _points=()
 
-  if build_points_from_github_releases "$pkg" "$current" "$latest" _points; then
+  # Step 1: Gather raw changelog from all sources (single API call)
+  local raw_context
+  raw_context="$(gather_raw_changelog "$pkg" "$current" "$latest")"
+
+  # Step 2: Try AI summarization
+  if [[ -n "$raw_context" ]] && ai_summarize_changelog "$pkg" "$current" "$latest" "$raw_context" _points; then
+    # AI summary succeeded — prefix with version range header
+    _points=("Änderungen ${current} → ${latest}" "${_points[@]}")
+    _points=("${_points[@]:0:3}")
     _pkg_out_points=("${_points[@]}")
     return 0
   fi
 
-  local desc versions range_versions
-  desc="$(safe_run "npm view '$pkg@$latest' description")"
-  versions="$(safe_run_all "npm view '$pkg' versions --json | jq -r 'if type==\"array\" then .[] else empty end' | tail -n 20")"
-
-  if [[ -n "$versions" ]]; then
-    mapfile -t range_versions < <(printf '%s\n' "$versions" | while IFS= read -r v; do
-      [[ -z "$v" ]] && continue
-      if version_gt "$v" "$current" && version_lte "$v" "$latest"; then
-        printf '%s\n' "$v"
-      fi
-    done)
-  else
-    range_versions=()
-  fi
-
-  if [[ -n "$desc" ]]; then
-    _points+=("$(shorten_line "$desc")")
-  else
-    _points+=("Änderungen ${current} → ${latest} (Details nicht direkt verfügbar)")
-  fi
-
-  if [[ "${#range_versions[@]}" -gt 0 ]]; then
-    _points+=("Versionen im Bereich: $(printf '%s, ' "${range_versions[@]:0:5}" | sed 's/, $//')")
-  else
-    _points+=("Versionen im Bereich nicht ermittelbar")
-  fi
-
-  _points+=("Details: npm view ${pkg}@${latest} readme")
-
-  while [[ "${#_points[@]}" -lt 3 ]]; do
-    _points+=("Keine weiteren Release-Notes gefunden")
-  done
-
+  # Step 3: Fallback — reuse the already-gathered context (no duplicate API call)
+  build_raw_points "$pkg" "$current" "$latest" _points "$raw_context"
   _pkg_out_points=("${_points[@]:0:3}")
+
+  while [[ "${#_pkg_out_points[@]}" -lt 3 ]]; do
+    _pkg_out_points+=("Keine Infos gefunden")
+  done
 }
 
 # ─── Update command resolver ──────────────────────────────────────────────────
@@ -382,7 +460,7 @@ get_update_command() {
       echo "opencode upgrade"
       ;;
     vibe-kanban)
-      echo "npx -y vibe-kanban@latest --help >/dev/null 2>&1 || true"
+      echo "npm install -g vibe-kanban@latest"
       ;;
     *)
       echo "npm install -g '${pkg}'@latest"
@@ -393,4 +471,56 @@ get_update_command() {
 get_update_key() {
   local pkg="$1"
   echo "$pkg" | tr '@/ ' '---' | sed 's/^-*//'
+}
+
+# ─── Dynamic global npm package discovery ─────────────────────────────────────
+# Returns globally-installed npm packages NOT in the watchlist.
+# Respects npm_exclude list in the watchlist to skip intentionally excluded packages.
+discover_new_global_npm_packages() {
+  local wl_file="${1:-$WATCHLIST_FILE}"
+  [[ -f "$wl_file" ]] || return 0
+
+  local installed_json
+  installed_json="$(safe_run_all 'npm ls -g --depth=0 --json')"
+  [[ -z "$installed_json" ]] && return 0
+
+  local installed_pkgs wl_pkgs exclude_pkgs
+  installed_pkgs="$(printf '%s' "$installed_json" | jq -r '.dependencies // {} | keys[]' 2>/dev/null | sort)"
+  [[ -z "$installed_pkgs" ]] && return 0
+
+  wl_pkgs="$(jq -r '.npm[]? // empty' "$wl_file" 2>/dev/null | sort)"
+  exclude_pkgs="$(jq -r '.npm_exclude[]? // empty' "$wl_file" 2>/dev/null | sort)"
+
+  local skip_set
+  skip_set="$(printf '%s\n%s' "$wl_pkgs" "$exclude_pkgs" | sort -u)"
+
+  comm -23 <(printf '%s\n' "$installed_pkgs") <(printf '%s\n' "$skip_set") | while IFS= read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    printf '%s\n' "$pkg"
+  done
+}
+
+# Adds newly discovered npm packages to the watchlist JSON.
+# Returns the count of packages added.
+sync_watchlist_npm() {
+  local wl_file="${1:-$WATCHLIST_FILE}"
+  [[ -f "$wl_file" ]] || return 0
+
+  local new_pkgs added=0
+  new_pkgs="$(discover_new_global_npm_packages "$wl_file")"
+  [[ -z "$new_pkgs" ]] && { echo 0; return 0; }
+
+  while IFS= read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    # Add to the npm array in the watchlist (idempotent, sorted)
+    local tmp_wl
+    tmp_wl="$(jq --arg p "$pkg" '.npm = (.npm + [$p] | unique | sort)' "$wl_file")"
+    if [[ -n "$tmp_wl" ]]; then
+      printf '%s\n' "$tmp_wl" > "$wl_file"
+      log_info "Watchlist: added new global package '$pkg'"
+      added=$((added + 1))
+    fi
+  done <<< "$new_pkgs"
+
+  echo "$added"
 }

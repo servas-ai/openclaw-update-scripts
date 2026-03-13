@@ -239,6 +239,12 @@ if ! validate_openclaw_config; then
   log_warn "$msg"
 fi
 
+# ─── Auto-discover new global npm packages ─────────────────────────────────────
+sync_count="$(sync_watchlist_npm "$WATCHLIST_FILE")"
+if [[ "$sync_count" -gt 0 ]]; then
+  log_info "Watchlist: $sync_count new global package(s) added."
+fi
+
 # ─── npm packages from watchlist ───────────────────────────────────────────────
 while IFS= read -r pkg; do
   [[ -z "$pkg" ]] && continue

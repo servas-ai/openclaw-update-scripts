@@ -80,6 +80,10 @@ update_npm_if_needed() {
   fi
 }
 
+# ─── Auto-discover new global npm packages ─────────────────────────────────────
+sync_count="$(sync_watchlist_npm "$WATCHLIST_FILE")"
+[[ "$sync_count" -gt 0 ]] && log_info "Watchlist: $sync_count new global package(s) added."
+
 # ─── npm watchlist ─────────────────────────────────────────────────────────────
 while IFS= read -r pkg; do
   [[ -z "$pkg" ]] && continue

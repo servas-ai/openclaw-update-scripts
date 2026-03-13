@@ -73,6 +73,7 @@ setup_mocks() {
   local config_valid="${4:-0}"
   local oc_latest="${5:-}"
   local releases_json="${6:-[]}"
+  local ai_response="${7:-}"
 
   echo "$npm_ls_json" > "$MOCK_DATA/npm-ls.json"
   echo "$versions_json" > "$MOCK_DATA/npm-versions.json"
@@ -80,6 +81,7 @@ setup_mocks() {
   echo "$releases_json" > "$MOCK_DATA/releases.json"
   echo "$config_valid" > "$MOCK_DATA/config-valid.txt"
   echo "$oc_latest" > "$MOCK_DATA/oc-latest.txt"
+  printf '%s' "$ai_response" > "$MOCK_DATA/ai-response.txt"
 
   # npm mock — use direct heredoc with var expansion, escape $* $args etc.
   cat > "$BIN_DIR/npm" <<MOCK_NPM
@@ -131,6 +133,14 @@ fi
 if [[ "\$1" == "message" && "\$2" == "send" ]]; then
   echo "\$@" >> "$MOCK_DATA/sent-messages.log"
   exit 0
+fi
+if [[ "\$1" == "agent" ]]; then
+  resp=\$(cat "$MOCK_DATA/ai-response.txt")
+  if [[ -n "\$resp" ]]; then
+    echo "\$resp"
+    exit 0
+  fi
+  exit 1
 fi
 if [[ "\$1" == "--version" ]]; then echo "OpenClaw 2026.3.11 (mock)"; exit 0; fi
 exit 0
@@ -501,6 +511,172 @@ assert_contains "$_OUT" "📦" "ui: package emoji"
 assert_contains "$_OUT" "📋" "ui: changelog emoji"
 assert_contains "$_OUT" "Soll i updaten?" "ui: CTA"
 assert_matches "$_OUT" "[0-9][0-9]\.[0-9][0-9]\.[0-9]" "ui: date present"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 17: Unit Tests — vibe-kanban update command fix
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: vibe-kanban update command (Bug Fix)"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="/usr/bin/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  cmd="$(get_update_command 'vibe-kanban')"
+  assert_contains "$cmd" "npm install -g" "vibe-kanban: uses npm install -g"
+  assert_contains "$cmd" "vibe-kanban@latest" "vibe-kanban: targets @latest"
+  assert_not_contains "$cmd" "npx" "vibe-kanban: no npx"
+  assert_not_contains "$cmd" "--help" "vibe-kanban: no --help"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 18: Unit Tests — discover_new_global_npm_packages
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: discover_new_global_npm_packages"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  # npm ls returns 3 packages, but watchlist only has "known"
+  setup_mocks \
+    '{"dependencies":{"known":{"version":"1.0.0"},"new-pkg":{"version":"2.0.0"},"another-new":{"version":"3.0.0"}}}' \
+    '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  wl_file="$TMP_DIR/disc-wl.json"
+  echo '{"npm":["known"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl_file"
+
+  new="$(discover_new_global_npm_packages "$wl_file")"
+  assert_contains "$new" "new-pkg" "discover: finds new-pkg"
+  assert_contains "$new" "another-new" "discover: finds another-new"
+  assert_not_contains "$new" "known" "discover: skips known"
+
+  # Test npm_exclude
+  echo '{"npm":["known"],"npm_exclude":["new-pkg"],"snap":[],"go":[]}' > "$wl_file"
+  new2="$(discover_new_global_npm_packages "$wl_file")"
+  assert_not_contains "$new2" "new-pkg" "discover: respects npm_exclude"
+  assert_contains "$new2" "another-new" "discover: non-excluded still found"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 19: Unit Tests — sync_watchlist_npm
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: sync_watchlist_npm"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"existing":{"version":"1.0.0"},"brand-new":{"version":"0.5.0"}}}' \
+    '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  wl_file="$TMP_DIR/sync-wl.json"
+  echo '{"npm":["existing"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl_file"
+
+  count="$(sync_watchlist_npm "$wl_file")"
+  assert_eq "$count" "1" "sync: added 1 package"
+
+  wl_content="$(cat "$wl_file")"
+  assert_contains "$wl_content" "brand-new" "sync: brand-new in watchlist"
+  assert_contains "$wl_content" "existing" "sync: existing preserved"
+
+  # Idempotent: running again should add 0
+  count2="$(sync_watchlist_npm "$wl_file")"
+  assert_eq "$count2" "0" "sync: idempotent (0 new on re-run)"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 20: Integration — Auto-discovery during check-updates
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Integration: Auto-discovery of new global packages"
+
+# npm has "tracked" (in watchlist) + "freshly-installed" (not in watchlist)
+# Both have updates available
+setup_mocks \
+  '{"dependencies":{"tracked":{"version":"1.0.0"},"freshly-installed":{"version":"0.1.0"},"openclaw":{"version":"99.0.0"}}}' \
+  '{"tracked":"1.5.0","freshly-installed":"0.2.0","openclaw":"99.0.0"}' \
+  '{"tracked":"Tracked pkg","freshly-installed":"Fresh pkg"}' 0
+
+# Watchlist only has "tracked" — "freshly-installed" should be auto-discovered
+wl="$TMP_DIR/wl-autodiscovery.json"
+echo '{"npm":["tracked"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl"
+
+PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
+WATCHLIST_FILE="$wl" STATE_FILE="$TMP_DIR/.state-auto.json" \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+bash "$TARGET_SCRIPT" >"$TMP_DIR/auto-out.txt" 2>"$TMP_DIR/auto-err.txt" || true
+
+_AUTO_OUT="$(cat "$TMP_DIR/auto-out.txt")"
+assert_contains "$_AUTO_OUT" "tracked: 1.0.0 → 1.5.0" "autodiscovery: tracked pkg still detected"
+assert_contains "$_AUTO_OUT" "freshly-installed: 0.1.0 → 0.2.0" "autodiscovery: new pkg auto-discovered and checked"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 21: Unit Tests — AI-powered changelog summarization
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Unit Tests: AI changelog summarization"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  AI_MOCK_RESPONSE=$'Neue API für Plugin-Verwaltung hinzugefügt\nBugfix bei der Konfigurationsvalidierung\nPerformance-Verbesserungen beim Start'
+  setup_mocks \
+    '{"dependencies":{"ai-test":{"version":"1.0.0"}}}' \
+    '{"ai-test":"2.0.0"}' \
+    '{"ai-test":"Test package"}' 0 '' '[]' "$AI_MOCK_RESPONSE"
+  source "$COMMON_LIB"
+
+  # Test: AI summarization enabled and returns 3 points
+  AI_SUMMARIZE=1
+  _ai_pts=()
+  raw="Package ai-test 1.0.0 to 2.0.0. New plugin API. Bugfix config. Faster startup."
+  if ai_summarize_changelog "ai-test" "1.0.0" "2.0.0" "$raw" _ai_pts; then
+    pass "ai_summarize: succeeds when enabled"
+  else
+    fail "ai_summarize: should succeed"
+  fi
+  assert_not_empty "${_ai_pts[0]:-}" "ai_summarize: point 1 present"
+  assert_not_empty "${_ai_pts[1]:-}" "ai_summarize: point 2 present"
+  assert_not_empty "${_ai_pts[2]:-}" "ai_summarize: point 3 present"
+  assert_contains "${_ai_pts[0]}" "Plugin" "ai_summarize: point 1 relevant"
+
+  # Test: AI disabled fallback
+  AI_SUMMARIZE=0
+  _ai_pts2=()
+  if ai_summarize_changelog "ai-test" "1.0.0" "2.0.0" "$raw" _ai_pts2; then
+    fail "ai_summarize: should fail when disabled"
+  else
+    pass "ai_summarize: correctly skipped when disabled"
+  fi
+
+  # Test: build_raw_points fallback works
+  _raw_pts=()
+  build_raw_points "ai-test" "1.0.0" "2.0.0" _raw_pts
+  [[ "${#_raw_pts[@]}" -ge 1 ]] && pass "build_raw_points: returns points" || fail "build_raw_points: empty"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 22: Integration — AI summary in check-updates output
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Integration: AI summary in check-updates output"
+
+AI_MOCK_RESP=$'Neues Authentifizierungssystem eingebaut\nBugfix für Login-Probleme\nDokumentation aktualisiert'
+setup_mocks \
+  '{"dependencies":{"ai-pkg":{"version":"1.0.0"},"openclaw":{"version":"99.0.0"}}}' \
+  '{"ai-pkg":"2.0.0","openclaw":"99.0.0"}' \
+  '{"ai-pkg":"AI test"}' 0 '' '[]' "$AI_MOCK_RESP"
+
+wl="$TMP_DIR/wl-ai-int.json"
+echo '{"npm":["ai-pkg"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl"
+
+PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
+AI_SUMMARIZE=1 AI_SUMMARIZE_TIMEOUT=5 \
+WATCHLIST_FILE="$wl" STATE_FILE="$TMP_DIR/.state-ai.json" \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+bash "$TARGET_SCRIPT" >"$TMP_DIR/ai-int-out.txt" 2>"$TMP_DIR/ai-int-err.txt" || true
+
+_AI_INT_OUT="$(cat "$TMP_DIR/ai-int-out.txt")"
+assert_contains "$_AI_INT_OUT" "ai-pkg: 1.0.0 → 2.0.0" "ai-int: package detected"
+assert_contains "$_AI_INT_OUT" "Authentifizierungssystem" "ai-int: AI summary point 1 in output"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
