@@ -8,7 +8,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/bash-5.0+-4EAA25?logo=gnubash&logoColor=white" alt="Bash 5.0+">
   <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=nodedotjs&logoColor=white" alt="Node.js">
-  <img src="https://img.shields.io/badge/tests-234%2F234-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-299%2F299-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
 </p>
 
@@ -48,7 +48,7 @@ Soll i updaten?
 | 📦 **Auto-Discovery** | Detects newly-installed global npm packages automatically |
 | 🛠 **Auto-Heal** | Self-repairs on critical failures (with 6h cooldown) |
 | ⚡ **Cached Lookups** | Single `npm ls -g` call cached across all package checks |
-| 🧪 **E2E Tests** | 234 mocked tests (53 suites) + Docker integration suite (60 assertions) |
+| 🧪 **E2E Tests** | 299 mocked tests (68 suites) + Docker integration suite (60 assertions) |
 | 🔄 **Multi-Channel** | Telegram, Matrix, or both simultaneously |
 
 ## Architecture
@@ -74,7 +74,7 @@ openclaw-update-scripts/
 │   ├── auto-update-all.sh      # Auto-update core packages
 │   └── update-watchlist.json   # Package watchlist
 ├── scripts/
-│   ├── e2e-update-check-validation.sh # Mocked test suite (234 tests)
+│   ├── e2e-update-check-validation.sh # Mocked test suite (299 tests)
 │   ├── docker-e2e-test.sh      # Docker E2E test (60 assertions)
 │   └── run-docker-e2e.sh       # Docker test runner
 ├── SKILL.md                    # AI-agent skill instructions
@@ -159,7 +159,7 @@ Falls back to raw changelog extraction if AI is unavailable.
 ```bash
 # Mocked unit + integration tests (no network)
 bash scripts/e2e-update-check-validation.sh
-# Expected: ✅ ALL TESTS PASSED: 234/234
+# Expected: ✅ ALL TESTS PASSED: 299/299
 
 # Docker E2E (full environment, requires Docker)
 bash scripts/run-docker-e2e.sh

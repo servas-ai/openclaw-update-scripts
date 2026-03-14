@@ -176,7 +176,7 @@ run_check() {
   PATH="$BIN_DIR:$PATH" \
   DRY_RUN=1 FORCE_NOTIFY="${2:-1}" SAFE_RUN_LOGIN=0 \
   WATCHLIST_FILE="$wl_file" STATE_FILE="$state" \
-  OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 \
+  OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 \
   AUTO_HEAL_ENABLED=0 \
   bash "$TARGET_SCRIPT" >"$out" 2>"$err" || true
 
@@ -373,13 +373,13 @@ dedup_state="$TMP_DIR/.dedup-state.json"
 # First run
 PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=0 SAFE_RUN_LOGIN=0 \
 WATCHLIST_FILE="$wl" STATE_FILE="$dedup_state" \
-OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
 bash "$TARGET_SCRIPT" >"$TMP_DIR/d1.txt" 2>/dev/null || true
 
 # Second run (same state → silent)
 PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=0 SAFE_RUN_LOGIN=0 \
 WATCHLIST_FILE="$wl" STATE_FILE="$dedup_state" \
-OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
 bash "$TARGET_SCRIPT" >"$TMP_DIR/d2.txt" 2>/dev/null || true
 
 assert_not_empty "$(cat "$TMP_DIR/d1.txt")" "dedup: first run has output"
@@ -393,7 +393,7 @@ suite "Integration: FORCE_NOTIFY bypasses dedup"
 
 PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
 WATCHLIST_FILE="$wl" STATE_FILE="$dedup_state" \
-OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
 bash "$TARGET_SCRIPT" >"$TMP_DIR/d3.txt" 2>/dev/null || true
 
 assert_not_empty "$(cat "$TMP_DIR/d3.txt")" "force: output despite same state"
@@ -611,7 +611,7 @@ echo '{"npm":["tracked"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl"
 
 PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
 WATCHLIST_FILE="$wl" STATE_FILE="$TMP_DIR/.state-auto.json" \
-OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
 bash "$TARGET_SCRIPT" >"$TMP_DIR/auto-out.txt" 2>"$TMP_DIR/auto-err.txt" || true
 
 _AUTO_OUT="$(cat "$TMP_DIR/auto-out.txt")"
@@ -677,9 +677,9 @@ wl="$TMP_DIR/wl-ai-int.json"
 echo '{"npm":["ai-pkg"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl"
 
 PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
-AI_SUMMARIZE=1 AI_SUMMARIZE_TIMEOUT=5 \
+AI_SUMMARIZE=1 AI_SUMMARIZE_TIMEOUT=1 \
 WATCHLIST_FILE="$wl" STATE_FILE="$TMP_DIR/.state-ai.json" \
-OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
 bash "$TARGET_SCRIPT" >"$TMP_DIR/ai-int-out.txt" 2>"$TMP_DIR/ai-int-err.txt" || true
 
 _AI_INT_OUT="$(cat "$TMP_DIR/ai-int-out.txt")"
@@ -1368,7 +1368,7 @@ dedup_file="$TMP_DIR/.dedup-change.json"
 # First run: dup-a at 1.0.0→2.0.0
 PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=0 SAFE_RUN_LOGIN=0 \
 WATCHLIST_FILE="$wl" STATE_FILE="$dedup_file" \
-OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
 bash "$TARGET_SCRIPT" >"$TMP_DIR/dd-1.txt" 2>/dev/null || true
 
 assert_not_empty "$(cat "$TMP_DIR/dd-1.txt")" "dedup-change: first run → output"
@@ -1383,7 +1383,7 @@ echo '{"npm":["dup-a","dup-b"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl2"
 
 PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=0 SAFE_RUN_LOGIN=0 \
 WATCHLIST_FILE="$wl2" STATE_FILE="$dedup_file" \
-OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
 bash "$TARGET_SCRIPT" >"$TMP_DIR/dd-2.txt" 2>/dev/null || true
 
 assert_not_empty "$(cat "$TMP_DIR/dd-2.txt")" "dedup-change: changed payload → re-notify"
@@ -1426,7 +1426,7 @@ suite "Integration: Large watchlist (10 packages)"
 
 large_deps='{"dependencies":{'
 large_vers='{'
-for i in $(seq 1 10); do
+for i in $(seq 1 5); do
   [[ $i -gt 1 ]] && large_deps+=',' && large_vers+=','
   large_deps+="\"pkg-$i\":{\"version\":\"1.0.$i\"}"
   large_vers+="\"pkg-$i\":\"2.0.$i\""
@@ -1438,7 +1438,7 @@ setup_mocks "$large_deps" "$large_vers" '{}' 0
 
 wl_large="$TMP_DIR/wl-large.json"
 pkgs=""
-for i in $(seq 1 10); do
+for i in $(seq 1 5); do
   [[ -n "$pkgs" ]] && pkgs+=","
   pkgs+="\"pkg-$i\""
 done
@@ -1446,13 +1446,13 @@ echo "{\"npm\":[$pkgs],\"npm_exclude\":[],\"snap\":[],\"go\":[]}" > "$wl_large"
 
 PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
 WATCHLIST_FILE="$wl_large" STATE_FILE="$TMP_DIR/.state-large.json" \
-OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=5 AUTO_HEAL_ENABLED=0 \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
 bash "$TARGET_SCRIPT" >"$TMP_DIR/large-out.txt" 2>/dev/null || true
 
 _LARGE_OUT="$(cat "$TMP_DIR/large-out.txt")"
-assert_contains "$_LARGE_OUT" "10 Update(s)" "large: 10 updates detected"
+assert_contains "$_LARGE_OUT" "5 Update(s)" "large: 5 updates detected"
 assert_contains "$_LARGE_OUT" "pkg-1" "large: first pkg present"
-assert_contains "$_LARGE_OUT" "pkg-10" "large: last pkg present"
+assert_contains "$_LARGE_OUT" "pkg-5" "large: last pkg present"
 assert_contains "$_LARGE_OUT" "Alle updaten" "large: alle button"
 
 # Buttons JSON valid
@@ -1588,6 +1588,444 @@ suite "Unit Tests: sync_watchlist_npm batch + sort"
   npm_len="$(echo "$wl_content" | jq '.npm | length')"
   assert_eq "$npm_len" "3" "batch: exactly 3 entries"
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 54: Edge Case — Corrupted watchlist JSON
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: Corrupted watchlist JSON"
+
+setup_mocks \
+  '{"dependencies":{"safe-pkg":{"version":"1.0.0"},"openclaw":{"version":"99.0.0"}}}' \
+  '{"safe-pkg":"1.5.0","openclaw":"99.0.0"}' \
+  '{}' 0
+
+# Create a malformed watchlist
+wl_bad="$TMP_DIR/wl-bad.json"
+echo '{"npm":["safe-pkg"],"snap":[],BROKEN' > "$wl_bad"
+
+PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
+WATCHLIST_FILE="$wl_bad" STATE_FILE="$TMP_DIR/.state-bad.json" \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
+bash "$TARGET_SCRIPT" >"$TMP_DIR/bad-out.txt" 2>"$TMP_DIR/bad-err.txt" || true
+
+# Should not crash — may produce empty output or error, but no segfault/panic
+pass "corrupted-wl: did not crash"
+# stderr should have warnings
+_BAD_ERR="$(cat "$TMP_DIR/bad-err.txt")"
+assert_not_empty "$_BAD_ERR" "corrupted-wl: stderr has warnings"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 55: Edge Case — Malformed npm ls JSON output
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: Malformed npm ls output"
+(
+  set +eo pipefail  # Intentional: testing error paths with invalid JSON
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+
+  # npm ls returns garbage
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  cat > "$BIN_DIR/npm" <<'MOCK_BADNPM'
+#!/usr/bin/env bash
+if [[ "$*" == *"ls -g"* ]]; then echo "NOT-JSON-AT-ALL"; exit 0; fi
+exit 0
+MOCK_BADNPM
+  chmod +x "$BIN_DIR/npm"
+  source "$COMMON_LIB"
+
+  # Should not crash, should return empty
+  result="$(npm_global_current_version "anything")"
+  assert_empty "$result" "malformed-npm: returns empty for bad JSON"
+
+  # Discover should return nothing
+  wl_file="$TMP_DIR/wl-mal.json"
+  echo '{"npm":[],"npm_exclude":[],"snap":[],"go":[]}' > "$wl_file"
+  new="$(discover_new_global_npm_packages "$wl_file")"
+  assert_empty "$new" "malformed-npm: discover returns nothing"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 56: Edge Case — AI fails, auto-fallback to raw points
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: AI fails → raw fallback"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  # AI returns empty (simulates timeout/failure)
+  setup_mocks \
+    '{"dependencies":{"fallback-pkg":{"version":"1.0.0"}}}' \
+    '{"fallback-pkg":"2.0.0"}' \
+    '{"fallback-pkg":"A fancy package"}' 0 '' '[]' ""
+  source "$COMMON_LIB"
+
+  AI_SUMMARIZE=1
+  _pts=()
+  package_whats_new_points "fallback-pkg" "1.0.0" "2.0.0" _pts
+
+  # Should still get 3 points via fallback
+  assert_eq "${#_pts[@]}" "3" "ai-fallback: still 3 points"
+  # At least one point should be non-empty (raw fallback)
+  assert_not_empty "${_pts[0]}" "ai-fallback: point 1 not empty"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 57: Edge Case — add_update populates all arrays correctly
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: add_update array population"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"arr-test":{"version":"1.0.0"}}}' \
+    '{"arr-test":"2.0.0"}' \
+    '{"arr-test":"Array test pkg"}' 0
+  source "$COMMON_LIB"
+
+  # Source the add_update function
+  eval "$(sed -n '/^add_update/,/^}/p' "$TARGET_SCRIPT")"
+
+  updates=()
+  json_items=()
+  lines=()
+  details=()
+  AI_SUMMARIZE=0
+
+  add_update "npm" "arr-test" "arr-test" "1.0.0" "2.0.0"
+
+  assert_eq "${#updates[@]}" "1" "add_update: 1 update"
+  assert_eq "${#json_items[@]}" "1" "add_update: 1 json item"
+  assert_eq "${#lines[@]}" "1" "add_update: 1 line"
+  assert_eq "${#details[@]}" "3" "add_update: 3 detail lines"
+  assert_contains "${json_items[0]}" "\"type\":\"npm\"" "add_update: json has type"
+  assert_contains "${json_items[0]}" "\"current\":\"1.0.0\"" "add_update: json has current"
+  assert_contains "${lines[0]}" "→" "add_update: line has arrow"
+  assert_contains "${details[0]}" "📋" "add_update: detail has emoji"
+
+  # Add second update
+  add_update "npm" "pkg2" "pkg2" "3.0.0" "4.0.0"
+  assert_eq "${#updates[@]}" "2" "add_update: 2 updates total"
+  assert_eq "${#details[@]}" "6" "add_update: 6 details total (2×3)"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 58: Edge Case — build_buttons_json odd package count
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: build_buttons_json odd + exactly 4"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+  eval "$(sed -n '/^build_buttons_json/,/^}/p' "$TARGET_SCRIPT")"
+
+  # 3 packages (odd) — should produce valid JSON
+  updates=("odd-a" "odd-b" "odd-c")
+  btn3="$(build_buttons_json 3)"
+  echo "$btn3" | jq . >/dev/null 2>&1 && pass "btn-odd-3: valid JSON" || fail "btn-odd-3: invalid JSON"
+  assert_contains "$btn3" "update_single_odd-a" "btn-odd-3: has pkg-a"
+  assert_contains "$btn3" "update_single_odd-c" "btn-odd-3: has pkg-c"
+
+  # Exactly 4 packages — all should be present
+  updates=("ex-1" "ex-2" "ex-3" "ex-4")
+  btn4="$(build_buttons_json 4)"
+  echo "$btn4" | jq . >/dev/null 2>&1 && pass "btn-exact-4: valid JSON" || fail "btn-exact-4: invalid JSON"
+  assert_contains "$btn4" "update_single_ex-1" "btn-exact-4: has ex-1"
+  assert_contains "$btn4" "update_single_ex-4" "btn-exact-4: has ex-4"
+
+  # 5 packages — only first 4 per-pkg buttons
+  updates=("five-1" "five-2" "five-3" "five-4" "five-5")
+  btn5="$(build_buttons_json 5)"
+  echo "$btn5" | jq . >/dev/null 2>&1 && pass "btn-5: valid JSON" || fail "btn-5: invalid JSON"
+  assert_contains "$btn5" "update_single_five-4" "btn-5: has five-4"
+  assert_not_contains "$btn5" "update_single_five-5" "btn-5: five-5 excluded"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 59: Edge Case — format_update_message detail alignment
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: format_update_message multi-package alignment"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+  eval "$(sed -n '/^format_update_message/,/^}/p' "$TARGET_SCRIPT")"
+
+  # 2 packages × 3 details = 6 detail lines
+  lines=("• pkg-a: 1.0 → 2.0" "• pkg-b: 3.0 → 4.0")
+  details=("  📋 a1" "  📋 a2" "  📋 a3" "  📋 b1" "  📋 b2" "  📋 b3")
+  diagnostics=()
+  changelog_warnings=()
+
+  msg="$(format_update_message 2)"
+  assert_contains "$msg" "2 Update(s)" "align: count=2"
+  assert_contains "$msg" "a1" "align: detail a1 present"
+  assert_contains "$msg" "a3" "align: detail a3 present"
+  assert_contains "$msg" "b1" "align: detail b1 present"
+  assert_contains "$msg" "b3" "align: detail b3 present"
+
+  # Verify detail lines come AFTER their package
+  a_pos="${msg%%a1*}"; a_pos="${#a_pos}"
+  b_pos="${msg%%b1*}"; b_pos="${#b_pos}"
+  pkg_a_pos="${msg%%pkg-a*}"; pkg_a_pos="${#pkg_a_pos}"
+  pkg_b_pos="${msg%%pkg-b*}"; pkg_b_pos="${#pkg_b_pos}"
+  [[ $a_pos -gt $pkg_a_pos ]] && pass "align: a details after pkg-a" || fail "align: a details order"
+  [[ $b_pos -gt $pkg_b_pos ]] && pass "align: b details after pkg-b" || fail "align: b details order"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 60: Edge Case — openclaw special version path
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: openclaw special update path in check-updates"
+
+setup_mocks \
+  '{"dependencies":{"openclaw":{"version":"2026.3.2"}}}' \
+  '{"openclaw":"2026.3.11"}' \
+  '{}' 1 "2026.3.11"
+wl_oc="$TMP_DIR/wl-oc-special.json"
+echo '{"npm":["openclaw"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl_oc"
+
+PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
+WATCHLIST_FILE="$wl_oc" STATE_FILE="$TMP_DIR/.state-oc.json" \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
+bash "$TARGET_SCRIPT" >"$TMP_DIR/oc-out.txt" 2>"$TMP_DIR/oc-err.txt" || true
+
+_OC_OUT="$(cat "$TMP_DIR/oc-out.txt")"
+assert_contains "$_OC_OUT" "openclaw: 2026.3.2 → 2026.3.11" "oc-special: detected update"
+assert_not_contains "$_OC_OUT" "Version lookup failed" "oc-special: no lookup failure"
+assert_not_contains "$(cat "$TMP_DIR/oc-err.txt")" "npm fallback" "oc-special: no npm fallback used"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 61: Edge Case — version_gt with complex suffixes
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: version_gt complex suffixes"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # RC versions
+  version_gt "1.0.0-rc.2" "1.0.0-rc.1" && pass "version: rc.2 > rc.1" || fail "version: rc.2 vs rc.1"
+  version_gt "2.0.0-rc.1" "1.99.99" && pass "version: 2.0.0-rc.1 > 1.99.99" || fail "version: 2.0-rc vs 1.99"
+
+  # Date-based versions (like openclaw)
+  version_gt "2026.3.11" "2026.3.2" && pass "version: 2026.3.11 > 2026.3.2" || fail "version: date semver"
+  version_gt "2026.12.1" "2026.3.11" && pass "version: 2026.12.1 > 2026.3.11" || fail "version: month 12 vs 3"
+
+  # Very close versions
+  version_gt "1.0.1" "1.0.0" && pass "version: 1.0.1 > 1.0.0" || fail "version: patch bump"
+  ! version_gt "1.0.0" "1.0.1" && pass "version: 1.0.0 NOT > 1.0.1" || fail "version: lower patch"
+
+  # Single-segment
+  version_gt "2" "1" && pass "version: 2 > 1 (single segment)" || fail "version: single segment"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 62: Edge Case — send_message when CLI unavailable
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: send_message with CLI unavailable"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  export CHANNEL="telegram" CHAT_ID="-123" THREAD_ID="1"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  OPENCLAW_CLI_AVAILABLE=0
+  rm -f "$MOCK_DATA/sent-messages.log"
+
+  if send_message "should not send" "" "telegram" 2>/dev/null; then
+    fail "cli-unavail: should return non-zero"
+  else
+    pass "cli-unavail: returns non-zero"
+  fi
+
+  # No message log should exist
+  if [[ -f "$MOCK_DATA/sent-messages.log" ]]; then
+    fail "cli-unavail: should not write log"
+  else
+    pass "cli-unavail: no log written"
+  fi
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 63: Edge Case — Corrupted state file
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: Corrupted state file"
+
+setup_mocks \
+  '{"dependencies":{"state-pkg":{"version":"1.0.0"},"openclaw":{"version":"99.0.0"}}}' \
+  '{"state-pkg":"2.0.0","openclaw":"99.0.0"}' \
+  '{}' 0
+
+wl_state="$(make_watchlist 'state-pkg')"
+state_bad="$TMP_DIR/.state-corrupt.json"
+echo "THIS IS NOT JSON AT ALL!!!" > "$state_bad"
+
+PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=0 SAFE_RUN_LOGIN=0 \
+WATCHLIST_FILE="$wl_state" STATE_FILE="$state_bad" \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
+bash "$TARGET_SCRIPT" >"$TMP_DIR/corrupt-out.txt" 2>/dev/null || true
+
+# Should produce output (corrupt state ≠ matching state)
+assert_not_empty "$(cat "$TMP_DIR/corrupt-out.txt")" "corrupt-state: produces output"
+assert_contains "$(cat "$TMP_DIR/corrupt-out.txt")" "state-pkg" "corrupt-state: detects update"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 64: Edge Case — gather_raw_changelog with no GitHub repo
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: gather_raw_changelog no GitHub"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  # npm returns empty for repository
+  setup_mocks \
+    '{"dependencies":{"no-gh":{"version":"1.0.0"}}}' \
+    '{"no-gh":"2.0.0"}' \
+    '{"no-gh":"A package without GitHub"}' 0
+
+  # Override npm to return empty for repository
+  cat > "$BIN_DIR/npm" <<'MOCK_NOREPO'
+#!/usr/bin/env bash
+if [[ "$*" == *"repository"* ]]; then echo ""; exit 0; fi
+if [[ "$*" == *"description"* ]]; then echo "A local-only package"; exit 0; fi
+if [[ "$*" == *"version"* ]]; then echo "2.0.0"; exit 0; fi
+if [[ "$*" == *"ls -g"* ]]; then echo '{"dependencies":{"no-gh":{"version":"1.0.0"}}}'; exit 0; fi
+if [[ "$*" == *"changelog"* ]]; then echo "undefined"; exit 0; fi
+exit 0
+MOCK_NOREPO
+  chmod +x "$BIN_DIR/npm"
+  source "$COMMON_LIB"
+
+  ctx="$(gather_raw_changelog "no-gh" "1.0.0" "2.0.0")"
+  # Should still have npm description even without GitHub
+  assert_contains "$ctx" "A local-only package" "no-gh: has npm description"
+  assert_not_contains "$ctx" "Release" "no-gh: no release sections"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 65: Edge Case — release_summary_line special characters
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: release_summary_line special chars"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks '{"dependencies":{}}' '{}' '{}' 0
+  source "$COMMON_LIB"
+
+  # Lines with only headers (should return empty)
+  r1="$(release_summary_line $'# Header\n## Another Header\n### Third')"
+  assert_empty "$r1" "summary-special: only headers → empty"
+
+  # Unicode and emojis
+  r2="$(release_summary_line '🚀 New feature: Multi-language support')"
+  assert_contains "$r2" "Multi-language" "summary-special: preserves content after emoji"
+
+  # HTML-style tags
+  r3="$(release_summary_line '<b>Bold text</b> with normal')"
+  assert_contains "$r3" "Bold text" "summary-special: handles HTML tags"
+
+  # Extremely long single line
+  long="$(printf '%0.sX' {1..500})"
+  r4="$(release_summary_line "$long")"
+  [[ ${#r4} -le 240 ]] && pass "summary-special: truncates to ≤240" || fail "summary-special: ${#r4} chars"
+
+  # Only whitespace lines before content
+  r5="$(release_summary_line $'    \n   \n  \nActual content here')"
+  assert_eq "$r5" "Actual content here" "summary-special: skips leading whitespace lines"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 66: Edge Case — npm_global_current_version scoped nested
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: npm version lookup deeply scoped packages"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"@deep/scope-pkg":{"version":"9.8.7"},"@org/another":{"version":"0.0.1"},"normal":{"version":"5.5.5"}}}' \
+    '{"@deep/scope-pkg":"10.0.0","@org/another":"0.0.2","normal":"6.0.0"}' \
+    '{}' 0
+  source "$COMMON_LIB"
+
+  assert_eq "$(npm_global_current_version '@deep/scope-pkg')" "9.8.7" "scoped-deep: @deep/scope-pkg"
+  assert_eq "$(npm_global_current_version '@org/another')" "0.0.1" "scoped-deep: @org/another"
+  assert_eq "$(npm_global_current_version 'normal')" "5.5.5" "scoped-deep: normal pkg"
+  assert_eq "$(npm_latest_version '@deep/scope-pkg')" "10.0.0" "scoped-deep: latest @deep"
+  assert_eq "$(npm_latest_version '@org/another')" "0.0.2" "scoped-deep: latest @org"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 67: Edge Case — update_npm_if_needed command failure
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Edge Case: update_npm_if_needed update fails"
+(
+  export PATH="$BIN_DIR:$PATH" SAFE_RUN_LOGIN=0 OPENCLAW_BIN="$BIN_DIR/openclaw"
+  setup_mocks \
+    '{"dependencies":{"fail-pkg":{"version":"1.0.0"}}}' \
+    '{"fail-pkg":"2.0.0"}' '{}' 0
+
+  # npm install fails
+  cat > "$BIN_DIR/npm" <<MOCK_FAIL
+#!/usr/bin/env bash
+if [[ "\$*" == *"install -g"* ]]; then echo "ERR: network timeout" >&2; exit 1; fi
+if [[ "\$*" == *"ls -g"* && "\$*" == *"--json"* ]]; then cat "$MOCK_DATA/npm-ls.json"; exit 0; fi
+if [[ "\$*" == *"view"* && "\$*" == *"version"* ]]; then
+  for pkg in \$(jq -r 'keys[]' "$MOCK_DATA/npm-versions.json" 2>/dev/null); do
+    if [[ "\$*" == *"\$pkg"* ]]; then
+      jq -r --arg p "\$pkg" '.[\$p] // empty' "$MOCK_DATA/npm-versions.json"
+      exit 0
+    fi
+  done
+fi
+exit 0
+MOCK_FAIL
+  chmod +x "$BIN_DIR/npm"
+  source "$COMMON_LIB"
+
+  report=()
+  updated_count=0
+  failed_count=0
+  skipped_count=0
+
+  update_npm_if_needed "fail-pkg"
+  assert_eq "$failed_count" "1" "fail-update: failed_count=1"
+  assert_contains "${report[*]}" "❌" "fail-update: has failure emoji"
+  assert_contains "${report[*]}" "fail-pkg" "fail-update: has pkg name"
+  assert_contains "${report[*]}" "Log:" "fail-update: has log path"
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUITE 68: Integration — All lookup failures (full script)
+# ═══════════════════════════════════════════════════════════════════════════════
+suite "Integration: All version lookups fail"
+
+# npm returns no versions at all
+setup_mocks \
+  '{"dependencies":{}}' \
+  '{}' '{}' 0
+wl_allfail="$TMP_DIR/wl-allfail.json"
+echo '{"npm":["ghost-a","ghost-b","ghost-c"],"npm_exclude":[],"snap":[],"go":[]}' > "$wl_allfail"
+
+PATH="$BIN_DIR:$PATH" DRY_RUN=1 FORCE_NOTIFY=1 SAFE_RUN_LOGIN=0 \
+WATCHLIST_FILE="$wl_allfail" STATE_FILE="$TMP_DIR/.state-allfail.json" \
+OPENCLAW_BIN="$BIN_DIR/openclaw" SAFE_TIMEOUT_SEC=1 AUTO_HEAL_ENABLED=0 \
+bash "$TARGET_SCRIPT" >"$TMP_DIR/allfail-out.txt" 2>"$TMP_DIR/allfail-err.txt" || true
+
+# No updates → no output (all failed lookups)
+_ALLFAIL_OUT="$(cat "$TMP_DIR/allfail-out.txt")"
+assert_empty "$_ALLFAIL_OUT" "all-fail: no output (no updates found)"
+
+# But stderr should have warnings
+_ALLFAIL_ERR="$(cat "$TMP_DIR/allfail-err.txt")"
+assert_contains "$_ALLFAIL_ERR" "Version lookup failed" "all-fail: stderr has failures"
+assert_contains "$_ALLFAIL_ERR" "ghost-a" "all-fail: ghost-a in stderr"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

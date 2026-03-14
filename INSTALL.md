@@ -179,7 +179,7 @@ bash scripts/e2e-update-check-validation.sh
 **✅ Verify:**
 ```bash
 bash scripts/e2e-update-check-validation.sh 2>&1 | tail -3
-# Expected: ✅ ALL TESTS PASSED: 234/234
+# Expected: ✅ ALL TESTS PASSED: 299/299
 ```
 
 ---
