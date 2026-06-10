@@ -2,6 +2,11 @@
 # lib/common.sh — Shared functions for openclaw-update-scripts
 # Source this file: SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #                   source "$SCRIPT_DIR/../lib/common.sh"
+#
+# ─── ACP Agent Configuration ──────────────────────────────────────────────────
+# Default ACP Agent : OME Open Agent  (opencode runtime, Sisyphus orchestrator)
+# UI / Browser tasks: Gemini-Sila     (gemini ACP runtime)
+# ──────────────────────────────────────────────────────────────────────────────
 
 # ─── Defaults ──────────────────────────────────────────────────────────────────
 CHAT_ID="${CHAT_ID:--1003766760589}"
@@ -46,7 +51,7 @@ validate_openclaw_config() {
     openclaw_config_valid=0
     return 1
   fi
-  if $OPENCLAW_BIN config validate >/dev/null 2>&1; then
+  if timeout 10 "$OPENCLAW_BIN" config validate >/dev/null 2>&1; then
     openclaw_config_valid=1
     return 0
   else
@@ -158,12 +163,39 @@ json_escape() {
 _NPM_GLOBAL_CACHE=""
 _NPM_GLOBAL_CACHE_TS=0
 
+# ─── Resolve the correct npm global prefix (NVM-aware) ──────────────────────
+# npm config prefix may differ from the NVM node prefix where packages are
+# actually installed.  Detect the node-binary prefix once and reuse it.
+_NPM_GLOBAL_PREFIX=""
+_resolve_npm_prefix() {
+  if [[ -n "$_NPM_GLOBAL_PREFIX" ]]; then
+    printf '%s' "$_NPM_GLOBAL_PREFIX"
+    return 0
+  fi
+  local nvm_prefix=""
+  if [[ -n "${NVM_BIN:-}" ]]; then
+    nvm_prefix="$(dirname "$NVM_BIN")"
+  elif command -v node >/dev/null 2>&1; then
+    nvm_prefix="$(dirname "$(dirname "$(command -v node)")")"
+  fi
+  if [[ -n "$nvm_prefix" && -d "$nvm_prefix/lib/node_modules" ]]; then
+    _NPM_GLOBAL_PREFIX="$nvm_prefix"
+  fi
+  printf '%s' "$_NPM_GLOBAL_PREFIX"
+}
+
 _npm_global_cache_refresh() {
   local now
   now="$(date +%s)"
   # Refresh at most once per 30 seconds
   if [[ -z "$_NPM_GLOBAL_CACHE" || $((now - _NPM_GLOBAL_CACHE_TS)) -gt 30 ]]; then
-    _NPM_GLOBAL_CACHE="$(safe_run_all 'npm ls -g --depth=0 --json')"
+    local prefix
+    prefix="$(_resolve_npm_prefix)"
+    if [[ -n "$prefix" ]]; then
+      _NPM_GLOBAL_CACHE="$(safe_run_all "npm --prefix '$prefix' ls -g --depth=0 --json")"
+    else
+      _NPM_GLOBAL_CACHE="$(safe_run_all 'npm ls -g --depth=0 --json')"
+    fi
     _NPM_GLOBAL_CACHE_TS="$now"
   fi
 }
@@ -375,6 +407,7 @@ ${raw_context}"
 
   ai_response="$(timeout "$AI_SUMMARIZE_TIMEOUT" "$OPENCLAW_BIN" agent \
     --local \
+    --agent main \
     --thinking off \
     --message "$prompt" 2>/dev/null || true)"
 
@@ -480,7 +513,7 @@ get_update_command() {
   local pkg="$1"
   case "$pkg" in
     openclaw)
-      echo "\"$OPENCLAW_BIN\" update --channel stable --yes"
+      echo "\"$OPENCLAW_BIN\" update --channel stable --yes || npm install -g openclaw@latest"
       ;;
     "@kaitranntt/ccs")
       echo "ccs update"
@@ -514,7 +547,13 @@ discover_new_global_npm_packages() {
   if [[ -n "$_NPM_GLOBAL_CACHE" ]]; then
     installed_json="$_NPM_GLOBAL_CACHE"
   else
-    installed_json="$(safe_run_all 'npm ls -g --depth=0 --json')"
+    local prefix
+    prefix="$(_resolve_npm_prefix)"
+    if [[ -n "$prefix" ]]; then
+      installed_json="$(safe_run_all "npm --prefix '$prefix' ls -g --depth=0 --json")"
+    else
+      installed_json="$(safe_run_all 'npm ls -g --depth=0 --json')"
+    fi
   fi
   [[ -z "$installed_json" ]] && return 0
 
@@ -567,6 +606,38 @@ sync_watchlist_npm() {
   echo "$added"
 }
 
+# ─── Security pre-install gate (VirusTotal + OSV + npm audit) ────────────────
+# Source the scanner once at init if available.
+_VT_SCANNER_PATH="${_VT_SCANNER_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../cron/virustotal-scan.sh}"
+if [[ -f "$_VT_SCANNER_PATH" && "${_VT_SCANNER_LOADED:-0}" != "1" ]]; then
+  # shellcheck source=../cron/virustotal-scan.sh
+  source "$_VT_SCANNER_PATH" 2>/dev/null || true
+  _VT_SCANNER_LOADED=1
+fi
+
+# Pre-install security check. Returns 0=ok, 1=blocked.
+# Sets SECURITY_SCAN_SUMMARY for the caller to include in the report.
+security_scan_package() {
+  local pkg="$1" version="$2"
+  SECURITY_SCAN_SUMMARY=""
+
+  # Skip if scanner not loaded
+  if ! declare -f scan_package >/dev/null 2>&1; then
+    log_warn "Security scanner not available – skipping scan for ${pkg}@${version}"
+    return 0
+  fi
+
+  # Skip scan if explicitly disabled
+  [[ "${VT_SKIP_SCAN:-0}" == "1" ]] && return 0
+
+  log_info "Security scan: ${pkg}@${version}…"
+  if ! scan_package "$pkg" "$version" 2>/dev/null; then
+    log_warn "Security scan BLOCKED: ${pkg}@${version} — ${SECURITY_SCAN_SUMMARY:-threat detected}"
+    return 1
+  fi
+  return 0
+}
+
 # ─── Shared update runner logic ────────────────────────────────────────────────
 # Used by run-all-updates.sh and run-all-updates-direct.sh to avoid duplication.
 # Callers must declare these arrays/counters before calling:
@@ -608,6 +679,15 @@ update_npm_if_needed() {
     return
   fi
 
+  # ── Pre-install security scan ──────────────────────────────────────────────
+  if ! security_scan_package "$pkg" "$latest"; then
+    report+=("🚨 ${pkg}: ${before} → ${latest} BLOCKIERT (Security-Scan: ${SECURITY_SCAN_SUMMARY:-Bedrohung erkannt})")
+    report+=("   📋 Details: ${SECURITY_LOG:-/tmp/openclaw-security-scan.log}")
+    failed_count=$((failed_count + 1))
+    return
+  fi
+  [[ -n "${SECURITY_SCAN_SUMMARY:-}" ]] && report+=("   🛡️ Security: ${SECURITY_SCAN_SUMMARY}")
+
   log="/tmp/openclaw-update-${key}.log"
   log_info "Updating ${pkg}: ${before} → ${latest} via: ${cmd}"
 
@@ -616,6 +696,17 @@ update_npm_if_needed() {
     after="$(npm_global_current_version "$pkg")"
     if [[ -n "$after" ]] && version_gt "$after" "$before"; then
       report+=("✅ ${pkg}: ${before} → ${after}")
+
+      local __points=()
+      package_whats_new_points "$pkg" "$before" "$after" __points
+      local p1 p2 p3
+      p1="${__points[0]:-Keine Infos gefunden}"
+      p2="${__points[1]:-Keine Infos gefunden}"
+      p3="${__points[2]:-Keine Infos gefunden}"
+      report+=("   • ${p1}")
+      report+=("   • ${p2}")
+      report+=("   • ${p3}")
+
       updated_count=$((updated_count + 1))
     elif [[ "$after" == "$before" ]]; then
       report+=("⚠️ ${pkg}: ${before} → ${after} (Befehl OK, Version unverändert)")
@@ -659,6 +750,9 @@ update_snap_packages() {
     if run_with_retry "snap refresh '$snap_name'" "$log"; then
       after="$(snap list "$snap_name" 2>/dev/null | awk 'NR==2{print $2}')"
       report+=("✅ snap:${snap_name}: ${before} → ${after}")
+      report+=("   • Änderungen ${before} → ${after}")
+      report+=("   • Snapshot-Paket erfolgreich aktualisiert")
+      report+=("   • Verifikation: snap list ${snap_name}")
       updated_count=$((updated_count + 1))
     else
       after="$(snap list "$snap_name" 2>/dev/null | awk 'NR==2{print $2}')"

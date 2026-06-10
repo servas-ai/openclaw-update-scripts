@@ -9,12 +9,16 @@ source "$SCRIPT_DIR/../lib/common.sh"
 # ─── Script-specific config ───────────────────────────────────────────────────
 STATE_FILE="${STATE_FILE:-${SCRIPT_DIR}/.last-update-notify.json}"
 MESSAGE_STATE_FILE="${MESSAGE_STATE_FILE:-${SCRIPT_DIR}/.last-update-message.json}"
-AUTO_HEAL_ENABLED="${AUTO_HEAL_ENABLED:-1}"
+AUTO_HEAL_ENABLED="${AUTO_HEAL_ENABLED:-0}"
 AUTO_HEAL_STATE_FILE="${AUTO_HEAL_STATE_FILE:-${SCRIPT_DIR}/.auto-heal-state.json}"
 AUTO_HEAL_COOLDOWN_SEC="${AUTO_HEAL_COOLDOWN_SEC:-21600}"
 AUTO_HEAL_SUBAGENT_RUNNER="${AUTO_HEAL_SUBAGENT_RUNNER:-${SCRIPT_DIR}/run-all-updates-via-subagent.sh}"
 AUTO_HEAL_FALLBACK_RUNNER="${AUTO_HEAL_FALLBACK_RUNNER:-${SCRIPT_DIR}/run-all-updates-direct.sh}"
 AUTO_HEAL_LOG="${AUTO_HEAL_LOG:-/tmp/openclaw-auto-heal.log}"
+AUTO_UPDATE_ENABLED="${AUTO_UPDATE_ENABLED:-1}"
+AUTO_UPDATE_SUBAGENT_RUNNER="${AUTO_UPDATE_SUBAGENT_RUNNER:-${SCRIPT_DIR}/run-all-updates-via-subagent.sh}"
+AUTO_UPDATE_FALLBACK_RUNNER="${AUTO_UPDATE_FALLBACK_RUNNER:-${SCRIPT_DIR}/run-all-updates-direct.sh}"
+AUTO_UPDATE_LOG="${AUTO_UPDATE_LOG:-/tmp/openclaw-auto-update.log}"
 
 # ─── State arrays ─────────────────────────────────────────────────────────────
 changelog_warnings=()
@@ -148,8 +152,34 @@ format_update_message() {
   fi
 
   msg+=$'━━━━━━━━━━━━━━━━━━━━━━━━━\n'
-  msg+=$'Soll i updaten?\n'
+  msg+=$'Auto-Update wird jetzt gestartet.\n'
   printf '%s' "$msg"
+}
+
+# ─── Trigger auto-update runner (subagent first, direct fallback) ─────────────
+trigger_auto_update_runner() {
+  [[ "$AUTO_UPDATE_ENABLED" == "1" ]] || return 1
+
+  local reason="$1"
+  local runner_used=""
+
+  if [[ -x "$AUTO_UPDATE_SUBAGENT_RUNNER" ]]; then
+    if nohup env TELEGRAM_NOTIFY=1 AUTO_UPDATE_REASON="$reason" "$AUTO_UPDATE_SUBAGENT_RUNNER" >"$AUTO_UPDATE_LOG" 2>&1 < /dev/null & then
+      runner_used="subagent"
+      printf '%s' "$runner_used"
+      return 0
+    fi
+  fi
+
+  if [[ -x "$AUTO_UPDATE_FALLBACK_RUNNER" ]]; then
+    if nohup env TELEGRAM_NOTIFY=1 AUTO_UPDATE_REASON="$reason" "$AUTO_UPDATE_FALLBACK_RUNNER" >"$AUTO_UPDATE_LOG" 2>&1 < /dev/null & then
+      runner_used="direct-fallback"
+      printf '%s' "$runner_used"
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 # ─── Format: Auto-heal message ────────────────────────────────────────────────
@@ -315,8 +345,8 @@ maybe_trigger_auto_heal
 count="${#updates[@]}"
 payload="[$(IFS=,; echo "${json_items[*]}")]"
 
-# ─── Dedup: skip if same payload and no auto-heal ─────────────────────────────
-if [[ "${FORCE_NOTIFY:-0}" != "1" ]]; then
+# ─── Dedup: skip only when auto-update is disabled and no auto-heal ───────────
+if [[ "${FORCE_NOTIFY:-0}" != "1" && "${AUTO_UPDATE_ENABLED}" != "1" ]]; then
   last=""
   [[ -f "$STATE_FILE" ]] && last="$(cat "$STATE_FILE" 2>/dev/null || true)"
   [[ "$last" == "$payload" && "$auto_heal_triggered" -eq 0 ]] && exit 0
@@ -346,17 +376,30 @@ if [[ "$auto_heal_triggered" -eq 1 ]]; then
   exit 0
 fi
 
-# ─── Update notification with buttons ──────────────────────────────────────────
+# ─── Update notification + auto-run (no approval buttons) ─────────────────────
 msg="$(format_update_message "$count")"
-buttons="$(build_buttons_json "$count")"
+reason="detected ${count} update(s) in scheduled check"
+runner_used=""
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  printf '%s\n' "$msg"
-  echo "---BUTTONS---"
-  printf '%s\n' "$buttons"
-  exit 0
+  if [[ "${AUTO_UPDATE_ENABLED}" == "1" ]]; then
+  runner_used="$(trigger_auto_update_runner "$reason" || true)"
+  if [[ -n "$runner_used" ]]; then
+    msg+=$'
+🚀 Auto-Update gestartet via '${runner_used}$'.
+📄 Log: '${AUTO_UPDATE_LOG}$'
+'
+  else
+    msg+=$'
+❌ Auto-Update konnte nicht gestartet werden (kein Runner verfügbar).
+'
+  fi
+else
+  msg+=$'
+ℹ️ Auto-Update ist deaktiviert (AUTO_UPDATE_ENABLED=0).
+'
 fi
 
-if ! send_to_all_channels "$msg" "$buttons"; then
+if ! send_to_all_channels "$msg"; then
   log_warn "Telegram/Matrix notify failed (non-fatal). Updates were still detected."
 fi

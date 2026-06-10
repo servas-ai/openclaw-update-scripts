@@ -33,7 +33,7 @@
     "vite",
     "yaml-language-server"
   ],
-  "npm_exclude": [],
+  "npm_exclude": ["corepack"],
   "snap": [
     "bare",
     "chromium",
